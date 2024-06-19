@@ -255,6 +255,7 @@ type CronSpec struct {
 	CronSchedule string    `json:"schedule" tom:"schedule"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
+	EVMChainID   *big.Big  `json:"evmChainID"`
 }
 
 // NewCronSpec generates a new CronSpec from a job.CronSpec
@@ -263,6 +264,7 @@ func NewCronSpec(spec *job.CronSpec) *CronSpec {
 		CronSchedule: spec.CronSchedule,
 		CreatedAt:    spec.CreatedAt,
 		UpdatedAt:    spec.UpdatedAt,
+		EVMChainID:   spec.EVMChainID,
 	}
 }
 
