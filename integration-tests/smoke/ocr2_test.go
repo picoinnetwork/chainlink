@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	seth_utils "github.com/smartcontractkit/chainlink-testing-framework/utils/seth"
+	"github.com/smartcontractkit/chainlink/integration-tests/utils"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/rs/zerolog"
@@ -139,7 +139,7 @@ func TestOCRv2JobReplacement(t *testing.T) {
 }
 
 func prepareORCv2SmokeTestEnv(t *testing.T, testData ocr2test, l zerolog.Logger, firstRoundResult int) (*test_env.CLClusterTestEnv, []contracts.OffchainAggregatorV2, *seth.Client) {
-	config, err := tc.GetConfig("Smoke", tc.OCR2)
+	config, err := tc.GetConfig([]string{"Smoke"}, tc.OCR2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func prepareORCv2SmokeTestEnv(t *testing.T, testData ocr2test, l zerolog.Logger,
 	evmNetwork, err := testEnv.GetFirstEvmNetwork()
 	require.NoError(t, err, "Error getting first evm network")
 
-	sethClient, err := seth_utils.GetChainClient(config, *evmNetwork)
+	sethClient, err := utils.TestAwareSethClient(t, config, evmNetwork)
 	require.NoError(t, err, "Error getting seth client")
 
 	nodeClients := testEnv.ClCluster.NodeAPIs()

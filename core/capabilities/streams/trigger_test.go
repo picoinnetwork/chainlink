@@ -87,7 +87,7 @@ func TestStreamsTrigger(t *testing.T) {
 		Members: capMembers,
 		F:       uint8(F),
 	}
-	config := &remotetypes.RemoteTriggerConfig{
+	config := &capabilities.RemoteTriggerConfig{
 		MinResponsesToAggregate: uint32(F + 1),
 	}
 	subscriber := remote.NewTriggerSubscriber(config, capInfo, capDonInfo, capabilities.DON{}, nil, agg, lggr)
@@ -191,10 +191,13 @@ func newTriggerEvent(t *testing.T, reportList []datastreams.FeedReport, triggerE
 		Payload:     val,
 	}
 
-	eventVal, err := values.Wrap(triggerEvent)
+	eventVal, err := values.WrapMap(triggerEvent)
 	require.NoError(t, err)
 
-	marshaled, err := pb.MarshalCapabilityResponse(capabilities.CapabilityResponse{Value: eventVal})
+	marshaled, err := pb.MarshalCapabilityResponse(
+		capabilities.CapabilityResponse{
+			Value: eventVal,
+		})
 	require.NoError(t, err)
 	msg := &remotetypes.MessageBody{
 		Sender: sender[:],

@@ -89,8 +89,9 @@ Password = '%s'`
 				"memory": "4Gi",
 			},
 		},
-		"stateful": true,
-		"capacity": "20Gi",
+		"stateful":                         true,
+		"capacity":                         "20Gi",
+		"enablePrometheusPostgresExporter": true,
 	}
 
 	recNodeSpec = map[string]interface{}{
@@ -153,7 +154,7 @@ func TestLogTrigger(t *testing.T) {
 	ctx := tests.Context(t)
 	l := logging.GetTestLogger(t)
 
-	loadedTestConfig, err := tc.GetConfig("Load", tc.Automation)
+	loadedTestConfig, err := tc.GetConfig([]string{"Load"}, tc.Automation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,10 +366,6 @@ Load Config:
 
 	if *loadedTestConfig.Automation.DataStreams.Enabled {
 		a.SetMercuryCredentialName("cred1")
-	}
-
-	if *conf.UseLogBufferV1 {
-		a.SetUseLogBufferV1(true)
 	}
 
 	startTimeTestSetup := time.Now()
