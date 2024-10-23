@@ -4,20 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/smartcontractkit/chainlink-common/pkg/capabilities"
-	"github.com/smartcontractkit/chainlink-common/pkg/capabilities/triggers"
-	"github.com/smartcontractkit/chainlink-common/pkg/services"
-	"github.com/smartcontractkit/chainlink-common/pkg/values"
-
 	"github.com/smartcontractkit/libocr/ragep2p"
 	ragetypes "github.com/smartcontractkit/libocr/ragep2p/types"
 
+	"github.com/smartcontractkit/chainlink-common/pkg/capabilities"
 	capabilitiespb "github.com/smartcontractkit/chainlink-common/pkg/capabilities/pb"
+	"github.com/smartcontractkit/chainlink-common/pkg/capabilities/triggers"
+	"github.com/smartcontractkit/chainlink-common/pkg/services"
+	"github.com/smartcontractkit/chainlink-common/pkg/values"
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/remote"
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/remote/target"
 	remotetypes "github.com/smartcontractkit/chainlink/v2/core/capabilities/remote/types"
@@ -130,6 +130,12 @@ func (w *launcher) Name() string {
 func (w *launcher) Launch(ctx context.Context, state *registrysyncer.LocalRegistry) error {
 	w.registry.SetLocalRegistry(state)
 
+	allDONIDs := []registrysyncer.DonID{}
+	for id := range state.IDsToDONs {
+		allDONIDs = append(allDONIDs, id)
+	}
+	slices.Sort(allDONIDs) // ensure deterministic order
+
 	// Let's start by updating the list of Peers
 	// We do this by creating a new entry for each node belonging
 	// to a public DON.
@@ -137,7 +143,8 @@ func (w *launcher) Launch(ctx context.Context, state *registrysyncer.LocalRegist
 	allPeers := make(map[ragetypes.PeerID]p2ptypes.StreamConfig)
 
 	publicDONs := []registrysyncer.DON{}
-	for _, d := range state.IDsToDONs {
+	for _, id := range allDONIDs {
+		d := state.IDsToDONs[id]
 		if !d.DON.IsPublic {
 			continue
 		}
@@ -167,7 +174,8 @@ func (w *launcher) Launch(ctx context.Context, state *registrysyncer.LocalRegist
 	myWorkflowDONs := []registrysyncer.DON{}
 	remoteWorkflowDONs := []registrysyncer.DON{}
 	myDONs := map[uint32]bool{}
-	for _, d := range state.IDsToDONs {
+	for _, id := range allDONIDs {
+		d := state.IDsToDONs[id]
 		for _, peerID := range d.Members {
 			if peerID == myID {
 				myDONs[d.ID] = true
@@ -244,23 +252,24 @@ func (w *launcher) addRemoteCapabilities(ctx context.Context, myDON registrysync
 		switch capability.CapabilityType {
 		case capabilities.CapabilityTypeTrigger:
 			newTriggerFn := func(info capabilities.CapabilityInfo) (capabilityService, error) {
-				if !strings.HasPrefix(info.ID, "streams-trigger") {
-					return nil, errors.New("not supported: trigger capability does not have id = streams-trigger")
+				var aggregator remotetypes.Aggregator
+				if strings.HasPrefix(info.ID, "streams-trigger") {
+					codec := streams.NewCodec(w.lggr)
+
+					signers, err := signersFor(remoteDON, state)
+					if err != nil {
+						return nil, err
+					}
+
+					aggregator = triggers.NewMercuryRemoteAggregator(
+						codec,
+						signers,
+						int(remoteDON.F+1),
+						w.lggr,
+					)
+				} else {
+					aggregator = remote.NewDefaultModeAggregator(uint32(remoteDON.F) + 1)
 				}
-
-				codec := streams.NewCodec(w.lggr)
-
-				signers, err := signersFor(remoteDON, state)
-				if err != nil {
-					return nil, err
-				}
-
-				aggregator := triggers.NewMercuryRemoteAggregator(
-					codec,
-					signers,
-					int(remoteDON.F+1),
-					w.lggr,
-				)
 
 				// TODO: We need to implement a custom, Mercury-specific
 				// aggregator here, because there is no guarantee that
@@ -385,7 +394,7 @@ func (w *launcher) exposeCapabilities(ctx context.Context, myPeerID p2ptypes.Pee
 
 		switch capability.CapabilityType {
 		case capabilities.CapabilityTypeTrigger:
-			newTriggerPublisher := func(capability capabilities.BaseCapability, info capabilities.CapabilityInfo) (receiverService, error) {
+			newTriggerPublisher := func(capability capabilities.BaseCapability, info capabilities.CapabilityInfo) (remotetypes.ReceiverService, error) {
 				publisher := remote.NewTriggerPublisher(
 					capabilityConfig.RemoteTriggerConfig,
 					capability.(capabilities.TriggerCapability),
@@ -407,7 +416,7 @@ func (w *launcher) exposeCapabilities(ctx context.Context, myPeerID p2ptypes.Pee
 		case capabilities.CapabilityTypeConsensus:
 			w.lggr.Warn("no remote client configured for capability type consensus, skipping configuration")
 		case capabilities.CapabilityTypeTarget:
-			newTargetServer := func(capability capabilities.BaseCapability, info capabilities.CapabilityInfo) (receiverService, error) {
+			newTargetServer := func(capability capabilities.BaseCapability, info capabilities.CapabilityInfo) (remotetypes.ReceiverService, error) {
 				return target.NewServer(
 					capabilityConfig.RemoteTargetConfig,
 					myPeerID,
@@ -432,12 +441,7 @@ func (w *launcher) exposeCapabilities(ctx context.Context, myPeerID p2ptypes.Pee
 	return nil
 }
 
-type receiverService interface {
-	services.Service
-	remotetypes.Receiver
-}
-
-func (w *launcher) addReceiver(ctx context.Context, capability registrysyncer.Capability, don registrysyncer.DON, newReceiverFn func(capability capabilities.BaseCapability, info capabilities.CapabilityInfo) (receiverService, error)) error {
+func (w *launcher) addReceiver(ctx context.Context, capability registrysyncer.Capability, don registrysyncer.DON, newReceiverFn func(capability capabilities.BaseCapability, info capabilities.CapabilityInfo) (remotetypes.ReceiverService, error)) error {
 	capID := capability.ID
 	info, err := capabilities.NewRemoteCapabilityInfo(
 		capID,

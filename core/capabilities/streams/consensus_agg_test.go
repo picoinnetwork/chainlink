@@ -9,7 +9,6 @@ import (
 
 	"github.com/smartcontractkit/libocr/commontypes"
 
-	"github.com/smartcontractkit/chainlink-common/pkg/capabilities"
 	"github.com/smartcontractkit/chainlink-common/pkg/capabilities/consensus/ocr3/datafeeds"
 	"github.com/smartcontractkit/chainlink-common/pkg/capabilities/datastreams"
 	"github.com/smartcontractkit/chainlink-common/pkg/values"
@@ -37,11 +36,11 @@ func TestStreamsConsensusAggregator(t *testing.T) {
 	config := newAggConfig(t, feeds)
 	lggr := logger.TestLogger(t)
 	codec := streams.NewCodec(lggr)
-	agg, err := datafeeds.NewDataFeedsAggregator(*config, codec, lggr)
+	agg, err := datafeeds.NewDataFeedsAggregator(*config, codec)
 	require.NoError(t, err)
 
 	// init round - empty previous Outcome, empty observations
-	outcome, err := agg.Aggregate(nil, map[commontypes.OracleID][]values.Value{}, Fw)
+	outcome, err := agg.Aggregate(lggr, nil, map[commontypes.OracleID][]values.Value{}, Fw)
 	require.NoError(t, err)
 	require.False(t, outcome.ShouldReport)
 
@@ -57,7 +56,7 @@ func TestStreamsConsensusAggregator(t *testing.T) {
 	for c := 0; c < T; c++ {
 		obs := newObservations(t, Nw, feeds, Ft+1, allowedSigners)
 		processingStart := time.Now().UnixMilli()
-		outcome, err = agg.Aggregate(outcome, obs, Fw)
+		outcome, err = agg.Aggregate(lggr, outcome, obs, Fw)
 		processingTime += time.Now().UnixMilli() - processingStart
 		require.NoError(t, err)
 	}
@@ -98,26 +97,18 @@ func newObservations(t *testing.T, nNodes int, feeds []feed, minRequiredSignatur
 			reportList = append(reportList, signedStreamsReport)
 		}
 
-		payloadVal, err := values.Wrap(reportList)
-		require.NoError(t, err)
-
-		meta := datastreams.SignersMetadata{
+		meta := datastreams.Metadata{
 			Signers:               allowedSigners,
 			MinRequiredSignatures: minRequiredSignatures,
 		}
-		metaVal, err := values.Wrap(meta)
+		p := datastreams.StreamsTriggerEvent{
+			Payload:  reportList,
+			Metadata: meta,
+		}
+		outputs, err := values.WrapMap(p)
 		require.NoError(t, err)
 
-		triggerEvent := capabilities.TriggerEvent{
-			TriggerType: triggerID,
-			ID:          "unused",
-			Timestamp:   "1234",
-			Metadata:    metaVal,
-			Payload:     payloadVal,
-		}
-		wrappedEvent, err := values.Wrap(triggerEvent)
-		require.NoError(t, err)
-		observations[commontypes.OracleID(i)] = []values.Value{wrappedEvent}
+		observations[commontypes.OracleID(i)] = []values.Value{outputs}
 	}
 	return observations
 }

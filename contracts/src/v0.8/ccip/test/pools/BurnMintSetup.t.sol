@@ -21,15 +21,17 @@ contract BurnMintSetup is RouterSetup {
     s_burnMintERC677 = new BurnMintERC677("Chainlink Token", "LINK", 18, 0);
   }
 
-  function _applyChainUpdates(address pool) internal {
+  function _applyChainUpdates(
+    address pool
+  ) internal {
     TokenPool.ChainUpdate[] memory chains = new TokenPool.ChainUpdate[](1);
     chains[0] = TokenPool.ChainUpdate({
       remoteChainSelector: DEST_CHAIN_SELECTOR,
       remotePoolAddress: abi.encode(s_remoteBurnMintPool),
       remoteTokenAddress: abi.encode(s_remoteToken),
       allowed: true,
-      outboundRateLimiterConfig: getOutboundRateLimiterConfig(),
-      inboundRateLimiterConfig: getInboundRateLimiterConfig()
+      outboundRateLimiterConfig: _getOutboundRateLimiterConfig(),
+      inboundRateLimiterConfig: _getInboundRateLimiterConfig()
     });
 
     BurnMintTokenPool(pool).applyChainUpdates(chains);

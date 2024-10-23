@@ -25,6 +25,7 @@ import (
 
 	"github.com/smartcontractkit/chainlink-common/pkg/sqlutil"
 	"github.com/smartcontractkit/chainlink-common/pkg/utils/jsonserializable"
+
 	txmgrcommon "github.com/smartcontractkit/chainlink/v2/common/txmgr"
 	txmgrtypes "github.com/smartcontractkit/chainlink/v2/common/txmgr/types"
 	"github.com/smartcontractkit/chainlink/v2/core/auth"
@@ -225,7 +226,7 @@ func NewLegacyEthTxAttempt(t *testing.T, etxID int64) txmgr.TxAttempt {
 	return txmgr.TxAttempt{
 		ChainSpecificFeeLimit: 42,
 		TxID:                  etxID,
-		TxFee:                 gas.EvmFee{Legacy: gasPrice},
+		TxFee:                 gas.EvmFee{GasPrice: gasPrice},
 		// Just a random signed raw tx that decodes correctly
 		// Ignore all actual values
 		SignedRawTx: hexutil.MustDecode("0xf889808504a817c8008307a12094000000000000000000000000000000000000000080a400000000000000000000000000000000000000000000000000000000000000000000000025a0838fe165906e2547b9a052c099df08ec891813fea4fcdb3c555362285eb399c5a070db99322490eb8a0f2270be6eca6e3aedbc49ff57ef939cf2774f12d08aa85e"),
@@ -241,8 +242,7 @@ func NewDynamicFeeEthTxAttempt(t *testing.T, etxID int64) txmgr.TxAttempt {
 		TxType: 0x2,
 		TxID:   etxID,
 		TxFee: gas.EvmFee{
-			DynamicTipCap: gasTipCap,
-			DynamicFeeCap: gasFeeCap,
+			DynamicFee: gas.DynamicFee{GasTipCap: gasTipCap, GasFeeCap: gasFeeCap},
 		},
 		// Just a random signed raw tx that decodes correctly
 		// Ignore all actual values
@@ -318,13 +318,13 @@ func MustGenerateRandomKeyState(_ testing.TB) ethkey.State {
 	return ethkey.State{Address: NewEIP55Address()}
 }
 
-func MustInsertHead(t *testing.T, ds sqlutil.DataSource, number int64) evmtypes.Head {
+func MustInsertHead(t *testing.T, ds sqlutil.DataSource, number int64) *evmtypes.Head {
 	h := evmtypes.NewHead(big.NewInt(number), evmutils.NewHash(), evmutils.NewHash(), 0, ubig.New(&FixtureChainID))
 	horm := headtracker.NewORM(FixtureChainID, ds)
 
 	err := horm.IdempotentInsertHead(testutils.Context(t), &h)
 	require.NoError(t, err)
-	return h
+	return &h
 }
 
 func MustInsertV2JobSpec(t *testing.T, db *sqlx.DB, transmitterAddress common.Address) job.Job {

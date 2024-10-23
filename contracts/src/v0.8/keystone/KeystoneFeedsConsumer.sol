@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
-import {IERC165} from "../vendor/openzeppelin-solidity/v4.8.3/contracts/interfaces/IERC165.sol";
-import {OwnerIsCreator} from "../shared/access/OwnerIsCreator.sol";
 import {IReceiver} from "./interfaces/IReceiver.sol";
+
+import {OwnerIsCreator} from "../shared/access/OwnerIsCreator.sol";
+
+import {IERC165} from "../vendor/openzeppelin-solidity/v4.8.3/contracts/interfaces/IERC165.sol";
 
 contract KeystoneFeedsConsumer is IReceiver, OwnerIsCreator, IERC165 {
   event FeedReceived(bytes32 indexed feedId, uint224 price, uint32 timestamp);
@@ -99,7 +101,7 @@ contract KeystoneFeedsConsumer is IReceiver, OwnerIsCreator, IERC165 {
     return (report.Price, report.Timestamp);
   }
 
-  function supportsInterface(bytes4 interfaceId) public pure override returns (bool) {
-    return interfaceId == this.onReport.selector;
+  function supportsInterface(bytes4 interfaceId) public pure returns (bool) {
+    return interfaceId == type(IReceiver).interfaceId || interfaceId == type(IERC165).interfaceId;
   }
 }

@@ -18,7 +18,7 @@ import (
 	"github.com/smartcontractkit/libocr/offchainreporting2plus/confighelper"
 	"github.com/smartcontractkit/libocr/offchainreporting2plus/types"
 
-	ctfClient "github.com/smartcontractkit/chainlink-testing-framework/client"
+	ctfClient "github.com/smartcontractkit/chainlink-testing-framework/lib/client"
 
 	"github.com/smartcontractkit/chainlink/v2/core/services/job"
 	"github.com/smartcontractkit/chainlink/v2/core/services/keystore/chaintype"
@@ -54,6 +54,7 @@ func BuildMedianOCR2Config(
 			AlphaAcceptPPB:      1,
 			DeltaC:              time.Minute * 30,
 		}.Encode(), // reportingPluginConfig []byte,
+		nil,
 		5*time.Second, // maxDurationQuery time.Duration,
 		5*time.Second, // maxDurationObservation time.Duration,
 		5*time.Second, // maxDurationReport time.Duration,

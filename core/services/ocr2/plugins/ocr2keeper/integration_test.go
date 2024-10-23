@@ -44,7 +44,6 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/gethwrappers/generated/link_token_interface"
 	"github.com/smartcontractkit/chainlink/v2/core/gethwrappers/generated/mock_v3_aggregator_contract"
 	"github.com/smartcontractkit/chainlink/v2/core/internal/cltest"
-	"github.com/smartcontractkit/chainlink/v2/core/internal/cltest/heavyweight"
 	"github.com/smartcontractkit/chainlink/v2/core/internal/testutils"
 	"github.com/smartcontractkit/chainlink/v2/core/logger"
 	"github.com/smartcontractkit/chainlink/v2/core/services/chainlink"
@@ -59,6 +58,7 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocrbootstrap"
 	"github.com/smartcontractkit/chainlink/v2/core/services/relay/evm"
 	"github.com/smartcontractkit/chainlink/v2/core/store/models"
+	"github.com/smartcontractkit/chainlink/v2/core/utils/testutils/heavyweight"
 )
 
 const (
@@ -347,7 +347,8 @@ func runKeeperPluginBasic(t *testing.T) {
 		3,                     // rMax uint8,
 		[]int{1, 1, 1, 1},
 		oracles,
-		offC,                  // reportingPluginConfig []byte,
+		offC, // reportingPluginConfig []byte,
+		nil,
 		20*time.Millisecond,   // Max duration query
 		1600*time.Millisecond, // Max duration observation
 		800*time.Millisecond,
@@ -602,7 +603,8 @@ func TestIntegration_KeeperPluginForwarderEnabled(t *testing.T) {
 		3,                    // rMax uint8,
 		[]int{1, 1, 1, 1},
 		oracles,
-		offC,                // reportingPluginConfig []byte,
+		offC, // reportingPluginConfig []byte,
+		nil,
 		50*time.Millisecond, // Max duration query
 		1*time.Second,       // Max duration observation
 		1*time.Second,

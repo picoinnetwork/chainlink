@@ -10,6 +10,8 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/assets"
 	evmconfig "github.com/smartcontractkit/chainlink/v2/core/chains/evm/config"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/config/chaintype"
+	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/config/toml"
+	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/types"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/utils"
 	"github.com/smartcontractkit/chainlink/v2/core/config"
 )
@@ -72,8 +74,30 @@ type TestGasEstimatorConfig struct {
 	bumpThreshold uint64
 }
 
+func (g *TestGasEstimatorConfig) DAOracle() evmconfig.DAOracle {
+	return &TestDAOracleConfig{}
+}
+
+type TestDAOracleConfig struct {
+	evmconfig.DAOracle
+}
+
+func (d *TestDAOracleConfig) OracleType() toml.DAOracleType { return toml.DAOracleOPStack }
+func (d *TestDAOracleConfig) OracleAddress() *types.EIP55Address {
+	a, err := types.NewEIP55Address("0x420000000000000000000000000000000000000F")
+	if err != nil {
+		panic(err)
+	}
+	return &a
+}
+func (d *TestDAOracleConfig) CustomGasPriceCalldata() string { return "" }
+
 func (g *TestGasEstimatorConfig) BlockHistory() evmconfig.BlockHistory {
 	return &TestBlockHistoryConfig{}
+}
+
+func (g *TestGasEstimatorConfig) FeeHistory() evmconfig.FeeHistory {
+	return &TestFeeHistoryConfig{}
 }
 
 func (g *TestGasEstimatorConfig) EIP1559DynamicFees() bool   { return false }
@@ -92,6 +116,7 @@ func (g *TestGasEstimatorConfig) LimitTransfer() uint64      { return 42 }
 func (g *TestGasEstimatorConfig) PriceMax() *assets.Wei      { return assets.NewWeiI(42) }
 func (g *TestGasEstimatorConfig) PriceMin() *assets.Wei      { return assets.NewWeiI(42) }
 func (g *TestGasEstimatorConfig) Mode() string               { return "FixedPrice" }
+func (g *TestGasEstimatorConfig) EstimateLimit() bool        { return false }
 func (g *TestGasEstimatorConfig) LimitJobType() evmconfig.LimitJobType {
 	return &TestLimitJobTypeConfig{}
 }
@@ -122,6 +147,12 @@ func (b *TestBlockHistoryConfig) BlockDelay() uint16                { return 42 
 func (b *TestBlockHistoryConfig) BlockHistorySize() uint16          { return 42 }
 func (b *TestBlockHistoryConfig) EIP1559FeeCapBufferBlocks() uint16 { return 42 }
 func (b *TestBlockHistoryConfig) TransactionPercentile() uint16     { return 42 }
+
+type TestFeeHistoryConfig struct {
+	evmconfig.FeeHistory
+}
+
+func (b *TestFeeHistoryConfig) CacheTimeout() time.Duration { return 0 * time.Second }
 
 type transactionsConfig struct {
 	evmconfig.Transactions

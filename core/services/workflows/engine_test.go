@@ -18,10 +18,19 @@ import (
 	"github.com/smartcontractkit/chainlink-common/pkg/services/servicetest"
 	"github.com/smartcontractkit/chainlink-common/pkg/values"
 	"github.com/smartcontractkit/chainlink-common/pkg/workflows"
+	"github.com/smartcontractkit/chainlink-common/pkg/workflows/sdk"
+	"github.com/smartcontractkit/chainlink-common/pkg/workflows/wasm/host"
+	"github.com/smartcontractkit/chainlink/v2/core/capabilities/webapi"
+	gcmocks "github.com/smartcontractkit/chainlink/v2/core/services/gateway/connector/mocks"
+	ghcapabilities "github.com/smartcontractkit/chainlink/v2/core/services/gateway/handlers/capabilities"
+
 	coreCap "github.com/smartcontractkit/chainlink/v2/core/capabilities"
+	"github.com/smartcontractkit/chainlink/v2/core/capabilities/compute"
 	"github.com/smartcontractkit/chainlink/v2/core/internal/testutils"
 	"github.com/smartcontractkit/chainlink/v2/core/internal/testutils/pgtest"
+	"github.com/smartcontractkit/chainlink/v2/core/internal/testutils/wasmtest"
 	"github.com/smartcontractkit/chainlink/v2/core/logger"
+	"github.com/smartcontractkit/chainlink/v2/core/services/gateway/handlers/common"
 	"github.com/smartcontractkit/chainlink/v2/core/services/job"
 	p2ptypes "github.com/smartcontractkit/chainlink/v2/core/services/p2p/types"
 	"github.com/smartcontractkit/chainlink/v2/core/services/registrysyncer"
@@ -129,8 +138,18 @@ func (t testConfigProvider) ConfigForCapability(ctx context.Context, capabilityI
 	return registrysyncer.CapabilityConfiguration{}, nil
 }
 
+func newTestEngineWithYAMLSpec(t *testing.T, reg *coreCap.Registry, spec string, opts ...func(c *Config)) (*Engine, *testHooks) {
+	sdkSpec, err := (&job.WorkflowSpec{
+		Workflow: spec,
+		SpecType: job.YamlSpec,
+	}).SDKSpec(testutils.Context(t))
+	require.NoError(t, err)
+
+	return newTestEngine(t, reg, sdkSpec, opts...)
+}
+
 // newTestEngine creates a new engine with some test defaults.
-func newTestEngine(t *testing.T, reg *coreCap.Registry, spec string, opts ...func(c *Config)) (*Engine, *testHooks) {
+func newTestEngine(t *testing.T, reg *coreCap.Registry, sdkSpec sdk.WorkflowSpec, opts ...func(c *Config)) (*Engine, *testHooks) {
 	initFailed := make(chan struct{})
 	initSuccessful := make(chan struct{})
 	executionFinished := make(chan string, 100)
@@ -141,7 +160,7 @@ func newTestEngine(t *testing.T, reg *coreCap.Registry, spec string, opts ...fun
 		WorkflowID: testWorkflowId,
 		Lggr:       logger.TestLogger(t),
 		Registry:   reg,
-		Spec:       spec,
+		Workflow:   sdkSpec,
 		maxRetries: 1,
 		retryMs:    100,
 		afterInit: func(success bool) {
@@ -186,7 +205,7 @@ func getExecutionId(t *testing.T, eng *Engine, hooks *testHooks) string {
 
 type mockCapability struct {
 	capabilities.CapabilityInfo
-	capabilities.CallbackExecutable
+	capabilities.Executable
 	response  chan capabilities.CapabilityResponse
 	transform func(capabilities.CapabilityRequest) (capabilities.CapabilityResponse, error)
 }
@@ -199,18 +218,14 @@ func newMockCapability(info capabilities.CapabilityInfo, transform func(capabili
 	}
 }
 
-func (m *mockCapability) Execute(ctx context.Context, req capabilities.CapabilityRequest) (<-chan capabilities.CapabilityResponse, error) {
+func (m *mockCapability) Execute(ctx context.Context, req capabilities.CapabilityRequest) (capabilities.CapabilityResponse, error) {
 	cr, err := m.transform(req)
 	if err != nil {
-		return nil, err
+		return capabilities.CapabilityResponse{}, err
 	}
 
-	ch := make(chan capabilities.CapabilityResponse, 10)
-
 	m.response <- cr
-	ch <- cr
-	close(ch)
-	return ch, nil
+	return cr, nil
 }
 
 func (m *mockCapability) RegisterToWorkflow(ctx context.Context, request capabilities.RegisterToWorkflowRequest) error {
@@ -223,20 +238,20 @@ func (m *mockCapability) UnregisterFromWorkflow(ctx context.Context, request cap
 
 type mockTriggerCapability struct {
 	capabilities.CapabilityInfo
-	triggerEvent *capabilities.CapabilityResponse
-	ch           chan capabilities.CapabilityResponse
+	triggerEvent *capabilities.TriggerResponse
+	ch           chan capabilities.TriggerResponse
 }
 
 var _ capabilities.TriggerCapability = (*mockTriggerCapability)(nil)
 
-func (m *mockTriggerCapability) RegisterTrigger(ctx context.Context, req capabilities.CapabilityRequest) (<-chan capabilities.CapabilityResponse, error) {
+func (m *mockTriggerCapability) RegisterTrigger(ctx context.Context, req capabilities.TriggerRegistrationRequest) (<-chan capabilities.TriggerResponse, error) {
 	if m.triggerEvent != nil {
 		m.ch <- *m.triggerEvent
 	}
 	return m.ch, nil
 }
 
-func (m *mockTriggerCapability) UnregisterTrigger(ctx context.Context, req capabilities.CapabilityRequest) error {
+func (m *mockTriggerCapability) UnregisterTrigger(ctx context.Context, req capabilities.TriggerRegistrationRequest) error {
 	return nil
 }
 
@@ -247,8 +262,8 @@ func TestEngineWithHardcodedWorkflow(t *testing.T) {
 	trigger, cr := mockTrigger(t)
 
 	require.NoError(t, reg.Add(ctx, trigger))
-	require.NoError(t, reg.Add(ctx, mockConsensus()))
-	target1 := mockTarget()
+	require.NoError(t, reg.Add(ctx, mockConsensus("")))
+	target1 := mockTarget("")
 	require.NoError(t, reg.Add(ctx, target1))
 
 	target2 := newMockCapability(
@@ -266,7 +281,7 @@ func TestEngineWithHardcodedWorkflow(t *testing.T) {
 	)
 	require.NoError(t, reg.Add(ctx, target2))
 
-	eng, testHooks := newTestEngine(
+	eng, testHooks := newTestEngineWithYAMLSpec(
 		t,
 		reg,
 		hardcodedWorkflow,
@@ -275,8 +290,11 @@ func TestEngineWithHardcodedWorkflow(t *testing.T) {
 	servicetest.Run(t, eng)
 
 	eid := getExecutionId(t, eng, testHooks)
-	assert.Equal(t, cr, <-target1.response)
-	assert.Equal(t, cr, <-target2.response)
+	resp1 := <-target1.response
+	assert.Equal(t, cr.Event.Outputs, resp1.Value)
+
+	resp2 := <-target2.response
+	assert.Equal(t, cr.Event.Outputs, resp2.Value)
 
 	state, err := eng.executionStates.Get(ctx, eid)
 	require.NoError(t, err)
@@ -327,14 +345,14 @@ targets:
 `
 )
 
-func mockTrigger(t *testing.T) (capabilities.TriggerCapability, capabilities.CapabilityResponse) {
+func mockTrigger(t *testing.T) (capabilities.TriggerCapability, capabilities.TriggerResponse) {
 	mt := &mockTriggerCapability{
 		CapabilityInfo: capabilities.MustNewCapabilityInfo(
 			"mercury-trigger@1.0.0",
 			capabilities.CapabilityTypeTrigger,
 			"issues a trigger when a mercury report is received.",
 		),
-		ch: make(chan capabilities.CapabilityResponse, 10),
+		ch: make(chan capabilities.TriggerResponse, 10),
 	}
 	resp, err := values.NewMap(map[string]any{
 		"123": decimal.NewFromFloat(1.00),
@@ -342,11 +360,15 @@ func mockTrigger(t *testing.T) (capabilities.TriggerCapability, capabilities.Cap
 		"789": decimal.NewFromFloat(1.50),
 	})
 	require.NoError(t, err)
-	cr := capabilities.CapabilityResponse{
-		Value: resp,
+	tr := capabilities.TriggerResponse{
+		Event: capabilities.TriggerEvent{
+			TriggerType: mt.ID,
+			ID:          time.Now().UTC().Format(time.RFC3339),
+			Outputs:     resp,
+		},
 	}
-	mt.triggerEvent = &cr
-	return mt, cr
+	mt.triggerEvent = &tr
+	return mt, tr
 }
 
 func mockNoopTrigger(t *testing.T) capabilities.TriggerCapability {
@@ -356,7 +378,7 @@ func mockNoopTrigger(t *testing.T) capabilities.TriggerCapability {
 			capabilities.CapabilityTypeTrigger,
 			"issues a trigger when a mercury report is received.",
 		),
-		ch: make(chan capabilities.CapabilityResponse, 10),
+		ch: make(chan capabilities.TriggerResponse, 10),
 	}
 	return mt
 }
@@ -374,26 +396,31 @@ func mockFailingConsensus() *mockCapability {
 	)
 }
 
-func mockConsensusWithEarlyTermination() *mockCapability {
+func mockConsensusWithEarlyTermination(id string) *mockCapability {
+	if len(id) == 0 {
+		id = "offchain_reporting@1.0.0"
+	}
 	return newMockCapability(
 		capabilities.MustNewCapabilityInfo(
-			"offchain_reporting@1.0.0",
+			id,
 			capabilities.CapabilityTypeConsensus,
 			"an ocr3 consensus capability",
 		),
 		func(req capabilities.CapabilityRequest) (capabilities.CapabilityResponse, error) {
-			return capabilities.CapabilityResponse{
+			return capabilities.CapabilityResponse{},
 				// copy error object to make sure message comparison works as expected
-				Err: errors.New(capabilities.ErrStopExecution.Error()),
-			}, nil
+				errors.New(capabilities.ErrStopExecution.Error())
 		},
 	)
 }
 
-func mockConsensus() *mockCapability {
+func mockConsensus(id string) *mockCapability {
+	if len(id) == 0 {
+		id = "offchain_reporting@1.0.0"
+	}
 	return newMockCapability(
 		capabilities.MustNewCapabilityInfo(
-			"offchain_reporting@1.0.0",
+			id,
 			capabilities.CapabilityTypeConsensus,
 			"an ocr3 consensus capability",
 		),
@@ -415,10 +442,13 @@ func mockConsensus() *mockCapability {
 	)
 }
 
-func mockTarget() *mockCapability {
+func mockTarget(id string) *mockCapability {
+	if len(id) == 0 {
+		id = "write_polygon-testnet-mumbai@1.0.0"
+	}
 	return newMockCapability(
 		capabilities.MustNewCapabilityInfo(
-			"write_polygon-testnet-mumbai@1.0.0",
+			id,
 			capabilities.CapabilityTypeTarget,
 			"a write capability targeting polygon mumbai testnet",
 		),
@@ -440,9 +470,9 @@ func TestEngine_ErrorsTheWorkflowIfAStepErrors(t *testing.T) {
 
 	require.NoError(t, reg.Add(ctx, trigger))
 	require.NoError(t, reg.Add(ctx, mockFailingConsensus()))
-	require.NoError(t, reg.Add(ctx, mockTarget()))
+	require.NoError(t, reg.Add(ctx, mockTarget("write_polygon-testnet-mumbai@1.0.0")))
 
-	eng, hooks := newTestEngine(t, reg, simpleWorkflow)
+	eng, hooks := newTestEngineWithYAMLSpec(t, reg, simpleWorkflow)
 
 	servicetest.Run(t, eng)
 
@@ -463,10 +493,10 @@ func TestEngine_GracefulEarlyTermination(t *testing.T) {
 	trigger, _ := mockTrigger(t)
 
 	require.NoError(t, reg.Add(ctx, trigger))
-	require.NoError(t, reg.Add(ctx, mockConsensusWithEarlyTermination()))
-	require.NoError(t, reg.Add(ctx, mockTarget()))
+	require.NoError(t, reg.Add(ctx, mockConsensusWithEarlyTermination("")))
+	require.NoError(t, reg.Add(ctx, mockTarget("")))
 
-	eng, hooks := newTestEngine(t, reg, simpleWorkflow)
+	eng, hooks := newTestEngineWithYAMLSpec(t, reg, simpleWorkflow)
 	servicetest.Run(t, eng)
 
 	eid := getExecutionId(t, eng, hooks)
@@ -551,16 +581,16 @@ func TestEngine_MultiStepDependencies(t *testing.T) {
 	ctx := testutils.Context(t)
 	reg := coreCap.NewRegistry(logger.TestLogger(t))
 
-	trigger, cr := mockTrigger(t)
+	trigger, tr := mockTrigger(t)
 
 	require.NoError(t, reg.Add(ctx, trigger))
-	require.NoError(t, reg.Add(ctx, mockConsensus()))
-	require.NoError(t, reg.Add(ctx, mockTarget()))
+	require.NoError(t, reg.Add(ctx, mockConsensus("")))
+	require.NoError(t, reg.Add(ctx, mockTarget("")))
 
 	action, out := mockAction(t)
 	require.NoError(t, reg.Add(ctx, action))
 
-	eng, hooks := newTestEngine(t, reg, multiStepWorkflow)
+	eng, hooks := newTestEngineWithYAMLSpec(t, reg, multiStepWorkflow)
 	servicetest.Run(t, eng)
 
 	eid := getExecutionId(t, eng, hooks)
@@ -578,9 +608,10 @@ func TestEngine_MultiStepDependencies(t *testing.T) {
 	obs := unw.(map[string]any)["observations"]
 	assert.Len(t, obs, 2)
 
-	tunw, err := values.Unwrap(cr.Value)
 	require.NoError(t, err)
-	assert.Equal(t, obs.([]any)[0], tunw)
+	uo, err := values.Unwrap(tr.Event.Outputs)
+	require.NoError(t, err)
+	assert.Equal(t, obs.([]any)[0].(map[string]any), uo)
 
 	o, err := values.Unwrap(out)
 	require.NoError(t, err)
@@ -601,8 +632,8 @@ func TestEngine_ResumesPendingExecutions(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, reg.Add(ctx, trigger))
-	require.NoError(t, reg.Add(ctx, mockConsensus()))
-	require.NoError(t, reg.Add(ctx, mockTarget()))
+	require.NoError(t, reg.Add(ctx, mockConsensus("")))
+	require.NoError(t, reg.Add(ctx, mockTarget("")))
 
 	action, _ := mockAction(t)
 	require.NoError(t, reg.Add(ctx, action))
@@ -622,10 +653,10 @@ func TestEngine_ResumesPendingExecutions(t *testing.T) {
 		ExecutionID: "<execution-ID>",
 		Status:      store.StatusStarted,
 	}
-	err = dbstore.Add(ctx, ec)
+	_, err = dbstore.Add(ctx, ec)
 	require.NoError(t, err)
 
-	eng, hooks := newTestEngine(
+	eng, hooks := newTestEngineWithYAMLSpec(
 		t,
 		reg,
 		multiStepWorkflow,
@@ -653,8 +684,8 @@ func TestEngine_TimesOutOldExecutions(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, reg.Add(ctx, trigger))
-	require.NoError(t, reg.Add(ctx, mockConsensus()))
-	require.NoError(t, reg.Add(ctx, mockTarget()))
+	require.NoError(t, reg.Add(ctx, mockConsensus("")))
+	require.NoError(t, reg.Add(ctx, mockTarget("")))
 
 	action, _ := mockAction(t)
 	require.NoError(t, reg.Add(ctx, action))
@@ -676,10 +707,10 @@ func TestEngine_TimesOutOldExecutions(t *testing.T) {
 		ExecutionID: "<execution-ID>",
 		Status:      store.StatusStarted,
 	}
-	err = dbstore.Add(ctx, ec)
+	_, err = dbstore.Add(ctx, ec)
 	require.NoError(t, err)
 
-	eng, hooks := newTestEngine(
+	eng, hooks := newTestEngineWithYAMLSpec(
 		t,
 		reg,
 		multiStepWorkflow,
@@ -750,13 +781,13 @@ func TestEngine_WrapsTargets(t *testing.T) {
 	trigger, _ := mockTrigger(t)
 
 	require.NoError(t, reg.Add(ctx, trigger))
-	require.NoError(t, reg.Add(ctx, mockConsensus()))
-	require.NoError(t, reg.Add(ctx, mockTarget()))
+	require.NoError(t, reg.Add(ctx, mockConsensus("")))
+	require.NoError(t, reg.Add(ctx, mockTarget("")))
 
 	clock := clockwork.NewFakeClock()
 	dbstore := newTestDBStore(t, clock)
 
-	eng, hooks := newTestEngine(
+	eng, hooks := newTestEngineWithYAMLSpec(
 		t,
 		reg,
 		delayedWorkflow,
@@ -796,8 +827,8 @@ func TestEngine_GetsNodeInfoDuringInitialization(t *testing.T) {
 	trigger, _ := mockTrigger(t)
 
 	require.NoError(t, reg.Add(ctx, trigger))
-	require.NoError(t, reg.Add(ctx, mockConsensus()))
-	require.NoError(t, reg.Add(ctx, mockTarget()))
+	require.NoError(t, reg.Add(ctx, mockConsensus("")))
+	require.NoError(t, reg.Add(ctx, mockTarget("")))
 
 	clock := clockwork.NewFakeClock()
 	dbstore := newTestDBStore(t, clock)
@@ -823,7 +854,7 @@ func TestEngine_GetsNodeInfoDuringInitialization(t *testing.T) {
 			return n, err
 		},
 	})
-	eng, hooks := newTestEngine(
+	eng, hooks := newTestEngineWithYAMLSpec(
 		t,
 		reg,
 		delayedWorkflow,
@@ -888,7 +919,7 @@ func TestEngine_PassthroughInterpolation(t *testing.T) {
 	trigger, _ := mockTrigger(t)
 
 	require.NoError(t, reg.Add(ctx, trigger))
-	require.NoError(t, reg.Add(ctx, mockConsensus()))
+	require.NoError(t, reg.Add(ctx, mockConsensus("")))
 	writeID := "write_ethereum-testnet-sepolia@1.0.0"
 	target := newMockCapability(
 		capabilities.MustNewCapabilityInfo(
@@ -904,7 +935,7 @@ func TestEngine_PassthroughInterpolation(t *testing.T) {
 	)
 	require.NoError(t, reg.Add(ctx, target))
 
-	eng, testHooks := newTestEngine(
+	eng, testHooks := newTestEngineWithYAMLSpec(
 		t,
 		reg,
 		passthroughInterpolationWorkflow,
@@ -949,7 +980,7 @@ func TestEngine_Error(t *testing.T) {
 			name:   "Error with error and no reason",
 			labels: map[string]string{eIDKey: "dd3708ac7d8dd6fa4fae0fb87b73f318a4da2526c123e159b72435e3b2fe8751"},
 			err:    err,
-			want:   "executionID dd3708ac7d8dd6fa4fae0fb87b73f318a4da2526c123e159b72435e3b2fe8751: some error",
+			want:   "workflowExecutionID dd3708ac7d8dd6fa4fae0fb87b73f318a4da2526c123e159b72435e3b2fe8751: some error",
 		},
 		{
 			name:   "Error with no error and reason",
@@ -978,7 +1009,7 @@ func TestEngine_Error(t *testing.T) {
 			},
 			err:    err,
 			reason: "some reason",
-			want:   "workflowID my-workflow-id: executionID dd3708ac7d8dd6fa4fae0fb87b73f318a4da2526c123e159b72435e3b2fe8751: capabilityID streams-trigger:network_eth@1.0.0: some reason: some error",
+			want:   "workflowID my-workflow-id: workflowExecutionID dd3708ac7d8dd6fa4fae0fb87b73f318a4da2526c123e159b72435e3b2fe8751: capabilityID streams-trigger:network_eth@1.0.0: some reason: some error",
 		},
 	}
 
@@ -997,16 +1028,23 @@ func TestEngine_Error(t *testing.T) {
 }
 
 func TestEngine_MergesWorkflowConfigAndCRConfig(t *testing.T) {
-	ctx := testutils.Context(t)
+	var (
+		ctx            = testutils.Context(t)
+		writeID        = "write_polygon-testnet-mumbai@1.0.0"
+		gotConfig      = values.EmptyMap()
+		wantConfigKeys = []string{"deltaStage", "schedule", "address", "params", "abi"}
+	)
+
+	giveRegistryConfig, err := values.WrapMap(map[string]any{
+		"deltaStage": "1s",
+		"schedule":   "allAtOnce",
+	})
+	assert.NoError(t, err, "failed to wrap map of registry config")
+
+	// Mock the capabilities of the simple workflow.
 	reg := coreCap.NewRegistry(logger.TestLogger(t))
-
 	trigger, _ := mockTrigger(t)
-
-	require.NoError(t, reg.Add(ctx, trigger))
-	require.NoError(t, reg.Add(ctx, mockConsensus()))
-	writeID := "write_polygon-testnet-mumbai@1.0.0"
-
-	gotConfig := values.EmptyMap()
+	consensus := mockConsensus("")
 	target := newMockCapability(
 		// Create a remote capability so we don't use the local transmission protocol.
 		capabilities.MustNewRemoteCapabilityInfo(
@@ -1016,6 +1054,7 @@ func TestEngine_MergesWorkflowConfigAndCRConfig(t *testing.T) {
 			&capabilities.DON{ID: 1},
 		),
 		func(req capabilities.CapabilityRequest) (capabilities.CapabilityResponse, error) {
+			// Replace the empty config with the write target config.
 			gotConfig = req.Config
 
 			return capabilities.CapabilityResponse{
@@ -1023,9 +1062,12 @@ func TestEngine_MergesWorkflowConfigAndCRConfig(t *testing.T) {
 			}, nil
 		},
 	)
+
+	require.NoError(t, reg.Add(ctx, trigger))
+	require.NoError(t, reg.Add(ctx, consensus))
 	require.NoError(t, reg.Add(ctx, target))
 
-	eng, testHooks := newTestEngine(
+	eng, testHooks := newTestEngineWithYAMLSpec(
 		t,
 		reg,
 		simpleWorkflow,
@@ -1036,16 +1078,9 @@ func TestEngine_MergesWorkflowConfigAndCRConfig(t *testing.T) {
 				return registrysyncer.CapabilityConfiguration{}, nil
 			}
 
-			cm, err := values.WrapMap(map[string]any{
-				"deltaStage": "1s",
-				"schedule":   "allAtOnce",
-			})
-			if err != nil {
-				return registrysyncer.CapabilityConfiguration{}, err
-			}
-
-			cb, err := proto.Marshal(&capabilitiespb.CapabilityConfig{
-				DefaultConfig: values.ProtoMap(cm),
+			var cb []byte
+			cb, err = proto.Marshal(&capabilitiespb.CapabilityConfig{
+				DefaultConfig: values.ProtoMap(giveRegistryConfig),
 			})
 			return registrysyncer.CapabilityConfiguration{
 				Config: cb,
@@ -1062,10 +1097,153 @@ func TestEngine_MergesWorkflowConfigAndCRConfig(t *testing.T) {
 
 	assert.Equal(t, state.Status, store.StatusCompleted)
 
+	// Assert that the config from the CR is merged with the default config from the registry.
 	m, err := values.Unwrap(gotConfig)
 	require.NoError(t, err)
 	assert.Equal(t, m.(map[string]any)["deltaStage"], "1s")
 	assert.Equal(t, m.(map[string]any)["schedule"], "allAtOnce")
+
+	for _, k := range wantConfigKeys {
+		assert.Contains(t, m.(map[string]any), k)
+	}
+}
+
+const customComputeWorkflow = `
+triggers:
+  - id: "mercury-trigger@1.0.0"
+    config:
+      feedlist:
+        - "0x1111111111111111111100000000000000000000000000000000000000000000" # ETHUSD
+        - "0x2222222222222222222200000000000000000000000000000000000000000000" # LINKUSD
+        - "0x3333333333333333333300000000000000000000000000000000000000000000" # BTCUSD
+
+actions:
+  - id: custom_compute@1.0.0
+    ref: custom_compute
+    config:
+      maxMemoryMBs: 128
+      tickInterval: 100ms
+      timeout: 300ms
+    inputs:
+      action:
+        - $(trigger.outputs)
+
+consensus:
+  - id: "offchain_reporting@1.0.0"
+    ref: "evm_median"
+    inputs:
+      observations:
+        - "$(trigger.outputs)"
+    config:
+      aggregation_method: "data_feeds_2_0"
+      aggregation_config:
+        "0x1111111111111111111100000000000000000000000000000000000000000000":
+          deviation: "0.001"
+          heartbeat: 3600
+        "0x2222222222222222222200000000000000000000000000000000000000000000":
+          deviation: "0.001"
+          heartbeat: 3600
+        "0x3333333333333333333300000000000000000000000000000000000000000000":
+          deviation: "0.001"
+          heartbeat: 3600
+      encoder: "EVM"
+      encoder_config:
+        abi: "mercury_reports bytes[]"
+
+targets:
+  - id: "write_ethereum-testnet-sepolia@1.0.0"
+    inputs: "$(evm_median.outputs)"
+    config:
+      address: "0x54e220867af6683aE6DcBF535B4f952cB5116510"
+      params: ["$(report)"]
+      abi: "receive(report bytes)"
+`
+
+// TestEngine_MergesWorkflowConfigAndCRConfig_CRConfigPrecedence tests that the engine merges the
+// workflow config with the CR config, with the CR config taking precedence.
+func TestEngine_MergesWorkflowConfigAndCRConfig_CRConfigPrecedence(t *testing.T) {
+	var (
+		ctx              = testutils.Context(t)
+		actionID         = "custom_compute@1.0.0"
+		giveTimeout      = 300 * time.Millisecond
+		giveTickInterval = 100 * time.Millisecond
+		registryConfig   = map[string]any{
+			"maxMemoryMBs": int64(64),
+			"timeout":      giveTimeout.String(),
+			"tickInterval": giveTickInterval.String(),
+		}
+		gotConfig = values.EmptyMap()
+	)
+
+	giveRegistryConfig, err := values.WrapMap(registryConfig)
+	assert.NoError(t, err, "failed to wrap map of registry config")
+
+	// Mock the capabilities of the simple workflow.
+	reg := coreCap.NewRegistry(logger.TestLogger(t))
+	trigger, _ := mockTrigger(t)
+	target := mockTarget("write_ethereum-testnet-sepolia@1.0.0")
+	action := newMockCapability(
+		// Create a remote capability so we don't use the local transmission protocol.
+		capabilities.MustNewRemoteCapabilityInfo(
+			actionID,
+			capabilities.CapabilityTypeAction,
+			"a custom compute action with custom config",
+			&capabilities.DON{ID: 1},
+		),
+		func(req capabilities.CapabilityRequest) (capabilities.CapabilityResponse, error) {
+			// Replace the empty config with the write target config.
+			gotConfig = req.Config
+
+			return capabilities.CapabilityResponse{
+				Value: req.Inputs,
+			}, nil
+		},
+	)
+
+	consensus := mockConsensus("")
+
+	require.NoError(t, reg.Add(ctx, trigger))
+	require.NoError(t, reg.Add(ctx, action))
+	require.NoError(t, reg.Add(ctx, target))
+	require.NoError(t, reg.Add(ctx, consensus))
+
+	eng, testHooks := newTestEngineWithYAMLSpec(
+		t,
+		reg,
+		customComputeWorkflow,
+	)
+	reg.SetLocalRegistry(testConfigProvider{
+		configForCapability: func(ctx context.Context, capabilityID string, donID uint32) (registrysyncer.CapabilityConfiguration, error) {
+			if capabilityID != actionID {
+				return registrysyncer.CapabilityConfiguration{}, nil
+			}
+
+			var cb []byte
+			cb, err = proto.Marshal(&capabilitiespb.CapabilityConfig{
+				DefaultConfig: values.ProtoMap(giveRegistryConfig),
+			})
+			return registrysyncer.CapabilityConfiguration{
+				Config: cb,
+			}, err
+		},
+	})
+
+	servicetest.Run(t, eng)
+
+	eid := getExecutionId(t, eng, testHooks)
+
+	state, err := eng.executionStates.Get(ctx, eid)
+	require.NoError(t, err)
+
+	assert.Equal(t, state.Status, store.StatusCompleted)
+
+	// Assert that the config from the CR is merged with the default config from the registry. With
+	// the CR config taking precedence.
+	m, err := values.Unwrap(gotConfig)
+	require.NoError(t, err)
+	assert.Equalf(t, registryConfig["maxMemoryMBs"], m.(map[string]any)["maxMemoryMBs"], "maxMemoryMBs should be %d", registryConfig["maxMemoryMBs"])
+	assert.Equalf(t, registryConfig["timeout"], m.(map[string]any)["timeout"], "timeout should be %s", registryConfig["timeout"])
+	assert.Equalf(t, registryConfig["tickInterval"], m.(map[string]any)["tickInterval"], "tickInterval should be %s", registryConfig["tickInterval"])
 }
 
 func TestEngine_HandlesNilConfigOnchain(t *testing.T) {
@@ -1075,7 +1253,7 @@ func TestEngine_HandlesNilConfigOnchain(t *testing.T) {
 	trigger, _ := mockTrigger(t)
 
 	require.NoError(t, reg.Add(ctx, trigger))
-	require.NoError(t, reg.Add(ctx, mockConsensus()))
+	require.NoError(t, reg.Add(ctx, mockConsensus("")))
 	writeID := "write_polygon-testnet-mumbai@1.0.0"
 
 	gotConfig := values.EmptyMap()
@@ -1097,7 +1275,7 @@ func TestEngine_HandlesNilConfigOnchain(t *testing.T) {
 	)
 	require.NoError(t, reg.Add(ctx, target))
 
-	eng, testHooks := newTestEngine(
+	eng, testHooks := newTestEngineWithYAMLSpec(
 		t,
 		reg,
 		simpleWorkflow,
@@ -1117,4 +1295,242 @@ func TestEngine_HandlesNilConfigOnchain(t *testing.T) {
 	require.NoError(t, err)
 	// The write target config contains three keys
 	assert.Len(t, m.(map[string]any), 3)
+}
+
+func TestEngine_MultiBranchExecution(t *testing.T) {
+	// This workflow describes 2 branches in the workflow graph.
+	// A -> B -> C
+	// A -> D -> E
+	workflowSpec := `
+triggers:
+  - id: "mercury-trigger@1.0.0"
+    config:
+      feedlist:
+        - "0x1111111111111111111100000000000000000000000000000000000000000000" # ETHUSD
+        - "0x2222222222222222222200000000000000000000000000000000000000000000" # LINKUSD
+        - "0x3333333333333333333300000000000000000000000000000000000000000000" # BTCUSD
+        
+consensus:
+  - id: "offchain_reporting@1.0.0"
+    ref: "evm_median"
+    inputs:
+      observations:
+        - "$(trigger.outputs)"
+    config:
+      aggregation_method: "data_feeds_2_0"
+      aggregation_config:
+        "0x1111111111111111111100000000000000000000000000000000000000000000":
+          deviation: "0.001"
+          heartbeat: "30m"
+        "0x2222222222222222222200000000000000000000000000000000000000000000":
+          deviation: "0.001"
+          heartbeat: "30m"
+        "0x3333333333333333333300000000000000000000000000000000000000000000":
+          deviation: "0.001"
+          heartbeat: "30m"
+      encoder: "EVM"
+      encoder_config:
+        abi: "mercury_reports bytes[]"
+  - id: "early_exit_offchain_reporting@1.0.0"
+    ref: "evm_median_early_exit"
+    inputs:
+      observations:
+        - "$(trigger.outputs)"
+    config:
+      aggregation_method: "data_feeds_2_0"
+      aggregation_config:
+        "0x1111111111111111111100000000000000000000000000000000000000000000":
+          deviation: "0.001"
+          heartbeat: "30m"
+        "0x2222222222222222222200000000000000000000000000000000000000000000":
+          deviation: "0.001"
+          heartbeat: "30m"
+        "0x3333333333333333333300000000000000000000000000000000000000000000":
+          deviation: "0.001"
+          heartbeat: "30m"
+      encoder: "EVM"
+      encoder_config:
+        abi: "mercury_reports bytes[]"
+
+targets:
+  - id: "write_polygon-testnet-mumbai@1.0.0"
+    inputs:
+      report: "$(evm_median.outputs.report)"
+    config:
+      address: "0x3F3554832c636721F1fD1822Ccca0354576741Ef"
+      params: ["$(report)"]
+      abi: "receive(report bytes)"
+  - id: "write_polygon-testnet-early-exit@1.0.0"
+    inputs:
+      report: "$(evm_median_early_exit.outputs.report)"
+    config:
+      address: "0x3F3554832c636721F1fD1822Ccca0354576741Ef"
+      params: ["$(report)"]
+      abi: "receive(report bytes)"
+`
+	ctx := testutils.Context(t)
+	reg := coreCap.NewRegistry(logger.TestLogger(t))
+
+	trigger, _ := mockTrigger(t)
+	require.NoError(t, reg.Add(ctx, trigger))
+	require.NoError(t, reg.Add(ctx, mockConsensus("")))
+	require.NoError(t, reg.Add(ctx, mockConsensusWithEarlyTermination("early_exit_offchain_reporting@1.0.0")))
+	require.NoError(t, reg.Add(ctx, mockTarget("")))
+	require.NoError(t, reg.Add(ctx, mockTarget("write_polygon-testnet-early-exit@1.0.0")))
+
+	eng, hooks := newTestEngineWithYAMLSpec(t, reg, workflowSpec)
+	servicetest.Run(t, eng)
+
+	eid := getExecutionId(t, eng, hooks)
+	state, err := eng.executionStates.Get(ctx, eid)
+	require.NoError(t, err)
+
+	assert.Equal(t, store.StatusCompletedEarlyExit, state.Status)
+}
+
+func basicTestTrigger(t *testing.T) *mockTriggerCapability {
+	mt := &mockTriggerCapability{
+		CapabilityInfo: capabilities.MustNewCapabilityInfo(
+			"basic-test-trigger@1.0.0",
+			capabilities.CapabilityTypeTrigger,
+			"basic test trigger",
+		),
+		ch: make(chan capabilities.TriggerResponse, 10),
+	}
+
+	resp, err := values.NewMap(map[string]any{
+		"cool_output": "foo",
+	})
+	require.NoError(t, err)
+	tr := capabilities.TriggerResponse{
+		Event: capabilities.TriggerEvent{
+			TriggerType: mt.ID,
+			ID:          time.Now().UTC().Format(time.RFC3339),
+			Outputs:     resp,
+		},
+	}
+	mt.triggerEvent = &tr
+	return mt
+}
+
+func TestEngine_WithCustomComputeStep(t *testing.T) {
+	cmd := "core/services/workflows/test/wasm/cmd"
+	binary := "test/wasm/cmd/testmodule.wasm"
+
+	ctx := testutils.Context(t)
+	log := logger.TestLogger(t)
+	reg := coreCap.NewRegistry(logger.TestLogger(t))
+	cfg := webapi.ServiceConfig{
+		RateLimiter: common.RateLimiterConfig{
+			GlobalRPS:      100.0,
+			GlobalBurst:    100,
+			PerSenderRPS:   100.0,
+			PerSenderBurst: 100,
+		},
+	}
+
+	connector := gcmocks.NewGatewayConnector(t)
+	handler, err := webapi.NewOutgoingConnectorHandler(
+		connector,
+		cfg,
+		ghcapabilities.MethodComputeAction, log)
+	require.NoError(t, err)
+
+	idGeneratorFn := func() string { return "validRequestID" }
+	compute := compute.NewAction(cfg, log, reg, handler, idGeneratorFn)
+	require.NoError(t, compute.Start(ctx))
+	defer compute.Close()
+
+	trigger := basicTestTrigger(t)
+	require.NoError(t, reg.Add(ctx, trigger))
+
+	binaryB := wasmtest.CreateTestBinary(cmd, binary, true, t)
+
+	spec, err := host.GetWorkflowSpec(
+		&host.ModuleConfig{Logger: log},
+		binaryB,
+		nil, // config
+	)
+	require.NoError(t, err)
+	eng, testHooks := newTestEngine(
+		t,
+		reg,
+		*spec,
+		func(c *Config) {
+			c.Binary = binaryB
+			c.Config = nil
+		},
+	)
+	reg.SetLocalRegistry(testConfigProvider{})
+
+	servicetest.Run(t, eng)
+
+	eid := getExecutionId(t, eng, testHooks)
+
+	state, err := eng.executionStates.Get(ctx, eid)
+	require.NoError(t, err)
+
+	assert.Equal(t, state.Status, store.StatusCompleted)
+	res, ok := state.ResultForStep("compute")
+	assert.True(t, ok)
+	assert.True(t, res.Outputs.(*values.Map).Underlying["Value"].(*values.Bool).Underlying)
+}
+
+func TestEngine_CustomComputePropagatesBreaks(t *testing.T) {
+	cmd := "core/services/workflows/test/break/cmd"
+	binary := "test/wasm/break/testmodule.wasm"
+
+	ctx := testutils.Context(t)
+	log := logger.TestLogger(t)
+	reg := coreCap.NewRegistry(logger.TestLogger(t))
+	cfg := webapi.ServiceConfig{
+		RateLimiter: common.RateLimiterConfig{
+			GlobalRPS:      100.0,
+			GlobalBurst:    100,
+			PerSenderRPS:   100.0,
+			PerSenderBurst: 100,
+		},
+	}
+	connector := gcmocks.NewGatewayConnector(t)
+	handler, err := webapi.NewOutgoingConnectorHandler(
+		connector,
+		cfg,
+		ghcapabilities.MethodComputeAction, log)
+	require.NoError(t, err)
+
+	idGeneratorFn := func() string { return "validRequestID" }
+	compute := compute.NewAction(cfg, log, reg, handler, idGeneratorFn)
+	require.NoError(t, compute.Start(ctx))
+	defer compute.Close()
+
+	trigger := basicTestTrigger(t)
+	require.NoError(t, reg.Add(ctx, trigger))
+
+	binaryB := wasmtest.CreateTestBinary(cmd, binary, true, t)
+
+	spec, err := host.GetWorkflowSpec(
+		&host.ModuleConfig{Logger: log},
+		binaryB,
+		nil, // config
+	)
+	require.NoError(t, err)
+	eng, testHooks := newTestEngine(
+		t,
+		reg,
+		*spec,
+		func(c *Config) {
+			c.Binary = binaryB
+			c.Config = nil
+		},
+	)
+	reg.SetLocalRegistry(testConfigProvider{})
+
+	servicetest.Run(t, eng)
+
+	eid := getExecutionId(t, eng, testHooks)
+
+	state, err := eng.executionStates.Get(ctx, eid)
+	require.NoError(t, err)
+
+	assert.Equal(t, state.Status, store.StatusCompletedEarlyExit)
 }

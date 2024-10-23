@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.4;
 
 import {IRouterClient} from "../interfaces/IRouterClient.sol";
 
@@ -53,24 +53,24 @@ contract CCIPClientExample is CCIPReceiver, OwnerIsCreator {
     s_chains[chainSelector] = extraArgs;
   }
 
-  function disableChain(uint64 chainSelector) external onlyOwner {
+  function disableChain(
+    uint64 chainSelector
+  ) external onlyOwner {
     delete s_chains[chainSelector];
   }
 
-  function ccipReceive(Client.Any2EVMMessage calldata message)
-    external
-    virtual
-    override
-    onlyRouter
-    validChain(message.sourceChainSelector)
-  {
+  function ccipReceive(
+    Client.Any2EVMMessage calldata message
+  ) external virtual override onlyRouter validChain(message.sourceChainSelector) {
     // Extremely important to ensure only router calls this.
     // Tokens in message if any will be transferred to this contract
     // TODO: Validate sender/origin chain and process message and/or tokens.
     _ccipReceive(message);
   }
 
-  function _ccipReceive(Client.Any2EVMMessage memory message) internal override {
+  function _ccipReceive(
+    Client.Any2EVMMessage memory message
+  ) internal override {
     emit MessageReceived(message.messageId);
   }
 
@@ -166,7 +166,9 @@ contract CCIPClientExample is CCIPReceiver, OwnerIsCreator {
     emit MessageSent(messageId);
   }
 
-  modifier validChain(uint64 chainSelector) {
+  modifier validChain(
+    uint64 chainSelector
+  ) {
     if (s_chains[chainSelector].length == 0) revert InvalidChain(chainSelector);
     _;
   }

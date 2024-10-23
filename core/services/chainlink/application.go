@@ -14,6 +14,9 @@ import (
 	"github.com/grafana/pyroscope-go"
 	"github.com/jonboulle/clockwork"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/multierr"
 	"go.uber.org/zap/zapcore"
 
@@ -23,11 +26,11 @@ import (
 	"github.com/smartcontractkit/chainlink-common/pkg/utils"
 	"github.com/smartcontractkit/chainlink-common/pkg/utils/jsonserializable"
 	"github.com/smartcontractkit/chainlink-common/pkg/utils/mailbox"
-
 	"github.com/smartcontractkit/chainlink/v2/core/bridges"
 	"github.com/smartcontractkit/chainlink/v2/core/build"
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities"
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/ccip"
+	gatewayconnector "github.com/smartcontractkit/chainlink/v2/core/capabilities/gateway_connector"
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/remote"
 	remotetypes "github.com/smartcontractkit/chainlink/v2/core/capabilities/remote/types"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/logpoller"
@@ -49,6 +52,7 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/services/job"
 	"github.com/smartcontractkit/chainlink/v2/core/services/keeper"
 	"github.com/smartcontractkit/chainlink/v2/core/services/keystore"
+	"github.com/smartcontractkit/chainlink/v2/core/services/llo"
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocr"
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocr2"
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocrbootstrap"
@@ -179,9 +183,11 @@ type ApplicationOpts struct {
 	LoopRegistry               *plugins.LoopRegistry
 	GRPCOpts                   loop.GRPCOpts
 	MercuryPool                wsrpc.Pool
+	RetirementReportCache      llo.RetirementReportCache
 	CapabilitiesRegistry       *capabilities.Registry
 	CapabilitiesDispatcher     remotetypes.Dispatcher
 	CapabilitiesPeerWrapper    p2ptypes.PeerWrapper
+	NewOracleFactoryFn         standardcapabilities.NewOracleFactoryFn
 }
 
 // NewApplication initializes a new store if one is not already
@@ -213,7 +219,10 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 			externalPeer := externalp2p.NewExternalPeerWrapper(keyStore.P2P(), cfg.Capabilities().Peering(), opts.DS, globalLogger)
 			signer := externalPeer
 			externalPeerWrapper = externalPeer
-			remoteDispatcher := remote.NewDispatcher(externalPeerWrapper, signer, opts.CapabilitiesRegistry, globalLogger)
+			remoteDispatcher, err := remote.NewDispatcher(cfg.Capabilities().Dispatcher(), externalPeerWrapper, signer, opts.CapabilitiesRegistry, globalLogger)
+			if err != nil {
+				return nil, fmt.Errorf("could not create dispatcher: %w", err)
+			}
 			dispatcher = remoteDispatcher
 		} else {
 			dispatcher = opts.CapabilitiesDispatcher
@@ -257,6 +266,20 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 
 			srvcs = append(srvcs, wfLauncher, registrySyncer)
 		}
+	} else {
+		globalLogger.Debug("External registry not configured, skipping registry syncer and starting with an empty registry")
+		opts.CapabilitiesRegistry.SetLocalRegistry(&capabilities.TestMetadataRegistry{})
+	}
+
+	var gatewayConnectorWrapper *gatewayconnector.ServiceWrapper
+	if cfg.Capabilities().GatewayConnector().DonID() != "" {
+		globalLogger.Debugw("Creating GatewayConnector wrapper", "donID", cfg.Capabilities().GatewayConnector().DonID())
+		gatewayConnectorWrapper = gatewayconnector.NewGatewayConnectorServiceWrapper(
+			cfg.Capabilities().GatewayConnector(),
+			keyStore.Eth(),
+			clockwork.NewRealClock(),
+			globalLogger)
+		srvcs = append(srvcs, gatewayConnectorWrapper)
 	}
 
 	// LOOPs can be created as options, in the  case of LOOP relayers, or
@@ -265,7 +288,7 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 	// we need to initialize in case we serve OCR2 LOOPs
 	loopRegistry := opts.LoopRegistry
 	if loopRegistry == nil {
-		loopRegistry = plugins.NewLoopRegistry(globalLogger, opts.Config.Tracing())
+		loopRegistry = plugins.NewLoopRegistry(globalLogger, opts.Config.Tracing(), opts.Config.Telemetry())
 	}
 
 	// If the audit logger is enabled
@@ -312,6 +335,9 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 	// pool must be started before all relayers and stopped after them
 	if opts.MercuryPool != nil {
 		srvcs = append(srvcs, opts.MercuryPool)
+	}
+	if opts.RetirementReportCache != nil {
+		srvcs = append(srvcs, opts.RetirementReportCache)
 	}
 
 	// EVM chains are used all over the place. This will need to change for fully EVM extraction
@@ -368,7 +394,7 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 	for i, chain := range legacyEVMChains.Slice() {
 		chainIDs[i] = chain.ID()
 	}
-	telemReporter := headreporter.NewTelemetryReporter(telemetryManager, chainIDs...)
+	telemReporter := headreporter.NewTelemetryReporter(telemetryManager, globalLogger, chainIDs...)
 	headReporter := headreporter.NewHeadReporterService(opts.DS, globalLogger, promReporter, telemReporter)
 	srvcs = append(srvcs, headReporter)
 	for _, chain := range legacyEVMChains.Slice() {
@@ -432,14 +458,6 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 				pipelineRunner,
 				cfg.JobPipeline(),
 			),
-			job.StandardCapabilities: standardcapabilities.NewDelegate(
-				globalLogger,
-				opts.DS, jobORM,
-				opts.CapabilitiesRegistry,
-				loopRegistrarConfig,
-				telemetryManager,
-				pipelineRunner,
-				opts.RelayerChainInteroperators),
 		}
 		webhookJobRunner = delegates[job.Webhook].(*webhook.Delegate).WebhookJobRunner()
 	)
@@ -479,6 +497,21 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 		return nil, fmt.Errorf("P2P stack required for OCR or OCR2")
 	}
 
+	// If peer wrapper is initialized, Oracle Factory dependency will be available to standard capabilities
+	delegates[job.StandardCapabilities] = standardcapabilities.NewDelegate(
+		globalLogger,
+		opts.DS, jobORM,
+		opts.CapabilitiesRegistry,
+		loopRegistrarConfig,
+		telemetryManager,
+		pipelineRunner,
+		opts.RelayerChainInteroperators,
+		gatewayConnectorWrapper,
+		keyStore,
+		peerWrapper,
+		opts.NewOracleFactoryFn,
+	)
+
 	if cfg.OCR().Enabled() {
 		delegates[job.OffchainReporting] = ocr.NewDelegate(
 			opts.DS,
@@ -502,22 +535,25 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 		ocr2DelegateConfig := ocr2.NewDelegateConfig(cfg.OCR2(), cfg.Mercury(), cfg.Threshold(), cfg.Insecure(), cfg.JobPipeline(), loopRegistrarConfig)
 
 		delegates[job.OffchainReporting2] = ocr2.NewDelegate(
-			opts.DS,
-			jobORM,
-			bridgeORM,
-			mercuryORM,
-			pipelineRunner,
-			streamRegistry,
-			peerWrapper,
-			telemetryManager,
-			legacyEVMChains,
-			globalLogger,
+			ocr2.DelegateOpts{
+				Ds:                    opts.DS,
+				JobORM:                jobORM,
+				BridgeORM:             bridgeORM,
+				MercuryORM:            mercuryORM,
+				PipelineRunner:        pipelineRunner,
+				StreamRegistry:        streamRegistry,
+				PeerWrapper:           peerWrapper,
+				MonitoringEndpointGen: telemetryManager,
+				LegacyChains:          legacyEVMChains,
+				Lggr:                  globalLogger,
+				Ks:                    keyStore.OCR2(),
+				EthKs:                 keyStore.Eth(),
+				Relayers:              opts.RelayerChainInteroperators,
+				MailMon:               mailMon,
+				CapabilitiesRegistry:  opts.CapabilitiesRegistry,
+				RetirementReportCache: opts.RetirementReportCache,
+			},
 			ocr2DelegateConfig,
-			keyStore.OCR2(),
-			keyStore.Eth(),
-			opts.RelayerChainInteroperators,
-			mailMon,
-			opts.CapabilitiesRegistry,
 		)
 		delegates[job.Bootstrap] = ocrbootstrap.NewDelegateBootstrap(
 			opts.DS,
@@ -532,13 +568,13 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 			globalLogger,
 			loopRegistrarConfig,
 			pipelineRunner,
-			opts.RelayerChainInteroperators.LegacyEVMChains(),
 			relayerChainInterops,
 			opts.KeyStore,
 			opts.DS,
 			peerWrapper,
 			telemetryManager,
 			cfg.Capabilities(),
+			cfg.EVMConfigs(),
 		)
 	} else {
 		globalLogger.Debug("Off-chain reporting v2 disabled")
@@ -571,6 +607,7 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 			jobSpawner,
 			keyStore,
 			cfg,
+			cfg.Feature(),
 			cfg.Insecure(),
 			cfg.JobPipeline(),
 			cfg.OCR(),
@@ -641,6 +678,14 @@ func (app *ChainlinkApplication) Start(ctx context.Context) error {
 	if app.started {
 		panic("application is already started")
 	}
+
+	var span trace.Span
+	ctx, span = otel.Tracer("").Start(ctx, "Start", trace.WithAttributes(
+		attribute.String("app-id", app.ID().String()),
+		attribute.String("version", static.Version),
+		attribute.String("commit", static.Sha),
+	))
+	defer span.End()
 
 	if app.FeedsService != nil {
 		if err := app.FeedsService.Start(ctx); err != nil {

@@ -342,9 +342,14 @@ func IntToHex(n int) string {
 // risk of spamming
 const TestInterval = 100 * time.Millisecond
 
-// AssertEventually waits for f to return true
-func AssertEventually(t *testing.T, f func() bool) {
-	assert.Eventually(t, f, WaitTimeout(t), TestInterval/2)
+// AssertEventually calls assert.Eventually with default wait and tick durations.
+func AssertEventually(t *testing.T, f func() bool) bool {
+	return assert.Eventually(t, f, WaitTimeout(t), TestInterval/2)
+}
+
+// RequireEventually calls assert.Eventually with default wait and tick durations.
+func RequireEventually(t *testing.T, f func() bool) {
+	require.Eventually(t, f, WaitTimeout(t), TestInterval/2)
 }
 
 // RequireLogMessage fails the test if emitted logs don't contain the given message
@@ -368,9 +373,22 @@ func RequireLogMessage(t *testing.T, observedLogs *observer.ObservedLogs, msg st
 //	observedZapCore, observedLogs := observer.New(zap.DebugLevel)
 //	lggr := logger.TestLogger(t, observedZapCore)
 func WaitForLogMessage(t *testing.T, observedLogs *observer.ObservedLogs, msg string) (le observer.LoggedEntry) {
-	AssertEventually(t, func() bool {
+	RequireEventually(t, func() bool {
 		for _, l := range observedLogs.All() {
 			if strings.Contains(l.Message, msg) {
+				le = l
+				return true
+			}
+		}
+		return false
+	})
+	return
+}
+
+func WaitForLogMessageWithField(t *testing.T, observedLogs *observer.ObservedLogs, msg, field, value string) (le observer.LoggedEntry) {
+	RequireEventually(t, func() bool {
+		for _, l := range observedLogs.All() {
+			if strings.Contains(l.Message, msg) && strings.Contains(l.ContextMap()[field].(string), value) {
 				le = l
 				return true
 			}
@@ -383,7 +401,7 @@ func WaitForLogMessage(t *testing.T, observedLogs *observer.ObservedLogs, msg st
 // WaitForLogMessageCount waits until at least count log message containing the
 // specified msg is emitted
 func WaitForLogMessageCount(t *testing.T, observedLogs *observer.ObservedLogs, msg string, count int) {
-	AssertEventually(t, func() bool {
+	RequireEventually(t, func() bool {
 		i := 0
 		for _, l := range observedLogs.All() {
 			if strings.Contains(l.Message, msg) {

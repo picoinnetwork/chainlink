@@ -20,6 +20,11 @@ type testNodeConfig struct {
 	enforceRepeatableRead      bool
 	finalizedBlockPollInterval time.Duration
 	deathDeclarationDelay      time.Duration
+	newHeadsPollInterval       time.Duration
+}
+
+func (n testNodeConfig) NewHeadsPollInterval() time.Duration {
+	return n.newHeadsPollInterval
 }
 
 func (n testNodeConfig) PollFailureThreshold() uint32 {
@@ -55,20 +60,20 @@ func (n testNodeConfig) DeathDeclarationDelay() time.Duration {
 }
 
 type testNode struct {
-	*node[types.ID, Head, NodeClient[types.ID, Head]]
+	*node[types.ID, Head, RPCClient[types.ID, Head]]
 }
 
 type testNodeOpts struct {
 	config      testNodeConfig
 	chainConfig clientMocks.ChainConfig
 	lggr        logger.Logger
-	wsuri       url.URL
+	wsuri       *url.URL
 	httpuri     *url.URL
 	name        string
-	id          int32
+	id          int
 	chainID     types.ID
 	nodeOrder   int32
-	rpc         *mockNodeClient[types.ID, Head]
+	rpc         *mockRPCClient[types.ID, Head]
 	chainFamily string
 }
 
@@ -93,10 +98,10 @@ func newTestNode(t *testing.T, opts testNodeOpts) testNode {
 		opts.id = 42
 	}
 
-	nodeI := NewNode[types.ID, Head, NodeClient[types.ID, Head]](opts.config, opts.chainConfig, opts.lggr,
+	nodeI := NewNode[types.ID, Head, RPCClient[types.ID, Head]](opts.config, opts.chainConfig, opts.lggr,
 		opts.wsuri, opts.httpuri, opts.name, opts.id, opts.chainID, opts.nodeOrder, opts.rpc, opts.chainFamily)
 
 	return testNode{
-		nodeI.(*node[types.ID, Head, NodeClient[types.ID, Head]]),
+		nodeI.(*node[types.ID, Head, RPCClient[types.ID, Head]]),
 	}
 }

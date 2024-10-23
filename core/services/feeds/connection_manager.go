@@ -5,14 +5,14 @@ import (
 	"sync"
 
 	"github.com/pkg/errors"
+	"google.golang.org/grpc/connectivity"
 
 	"github.com/smartcontractkit/wsrpc"
-	"github.com/smartcontractkit/wsrpc/connectivity"
 
 	"github.com/smartcontractkit/chainlink-common/pkg/services"
+	pb "github.com/smartcontractkit/chainlink-protos/orchestrator/feedsmanager"
 	"github.com/smartcontractkit/chainlink/v2/core/logger"
 	"github.com/smartcontractkit/chainlink/v2/core/recovery"
-	pb "github.com/smartcontractkit/chainlink/v2/core/services/feeds/proto"
 )
 
 type ConnectionsManager interface {
@@ -110,7 +110,12 @@ func (mgr *connectionsManager) Connect(opts ConnectOpts) {
 
 			return
 		}
-		defer clientConn.Close()
+		defer func() {
+			cerr := clientConn.Close()
+			if cerr != nil {
+				mgr.lggr.Warnf("Error closing wsrpc client connection: %v", cerr)
+			}
+		}()
 
 		mgr.lggr.Infow("Connected to Feeds Manager", "feedsManagerID", opts.FeedsManagerID)
 

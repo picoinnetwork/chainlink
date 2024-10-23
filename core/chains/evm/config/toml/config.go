@@ -23,7 +23,9 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/utils/big"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound = errors.New("not found")
+)
 
 type HasEVMConfigs interface {
 	EVMConfigs() EVMConfigs
@@ -311,20 +313,32 @@ func (c *EVMConfig) ValidateConfig() (err error) {
 		err = multierr.Append(err, commonconfig.ErrMissing{Name: "Nodes", Msg: "must have at least one node"})
 	} else {
 		var hasPrimary bool
-		for _, n := range c.Nodes {
+		var logBroadcasterEnabled bool
+		if c.LogBroadcasterEnabled != nil {
+			logBroadcasterEnabled = *c.LogBroadcasterEnabled
+		}
+
+		for i, n := range c.Nodes {
 			if n.SendOnly != nil && *n.SendOnly {
 				continue
 			}
+
 			hasPrimary = true
-			break
+
+			// if the node is a primary node, then the WS URL is required when LogBroadcaster is enabled
+			if logBroadcasterEnabled && (n.WSURL == nil || n.WSURL.IsZero()) {
+				err = multierr.Append(err, commonconfig.ErrMissing{Name: "Nodes", Msg: fmt.Sprintf("%vth node (primary) must have a valid WSURL when LogBroadcaster is enabled", i)})
+			}
 		}
+
 		if !hasPrimary {
 			err = multierr.Append(err, commonconfig.ErrMissing{Name: "Nodes",
-				Msg: "must have at least one primary node with WSURL"})
+				Msg: "must have at least one primary node"})
 		}
 	}
 
 	err = multierr.Append(err, c.Chain.ValidateConfig())
+	err = multierr.Append(err, c.NodePool.ValidateConfig(c.Chain.FinalityTagEnabled))
 
 	return
 }
@@ -341,7 +355,7 @@ type Chain struct {
 	AutoCreateKey                *bool
 	BlockBackfillDepth           *uint32
 	BlockBackfillSkip            *bool
-	ChainType                    *chaintype.ChainTypeConfig
+	ChainType                    *chaintype.Config
 	FinalityDepth                *uint32
 	FinalityTagEnabled           *bool
 	FlagsContractAddress         *types.EIP55Address
@@ -356,6 +370,7 @@ type Chain struct {
 	NonceAutoSync                *bool
 	NoNewHeadsThreshold          *commonconfig.Duration
 	OperatorFactoryAddress       *types.EIP55Address
+	LogBroadcasterEnabled        *bool
 	RPCDefaultBatchSize          *uint32
 	RPCBlockQueryDelay           *uint16
 	FinalizedBlockOffset         *uint32
@@ -375,7 +390,7 @@ type Chain struct {
 func (c *Chain) ValidateConfig() (err error) {
 	if !c.ChainType.ChainType().IsValid() {
 		err = multierr.Append(err, commonconfig.ErrInvalid{Name: "ChainType", Value: c.ChainType.ChainType(),
-			Msg: chaintype.ErrInvalidChainType.Error()})
+			Msg: chaintype.ErrInvalid.Error()})
 	}
 
 	if c.GasEstimator.BumpTxDepth != nil && *c.GasEstimator.BumpTxDepth > *c.Transactions.MaxInFlight {
@@ -521,6 +536,7 @@ func (a *Automation) setFrom(f *Automation) {
 type Workflow struct {
 	FromAddress      *types.EIP55Address `toml:",omitempty"`
 	ForwarderAddress *types.EIP55Address `toml:",omitempty"`
+	GasLimitDefault  *uint64
 }
 
 func (m *Workflow) setFrom(f *Workflow) {
@@ -529,6 +545,10 @@ func (m *Workflow) setFrom(f *Workflow) {
 	}
 	if v := f.ForwarderAddress; v != nil {
 		m.ForwarderAddress = v
+	}
+
+	if v := f.GasLimitDefault; v != nil {
+		m.GasLimitDefault = v
 	}
 }
 
@@ -554,6 +574,7 @@ type GasEstimator struct {
 	LimitMultiplier *decimal.Decimal
 	LimitTransfer   *uint64
 	LimitJobType    GasLimitJobType `toml:",omitempty"`
+	EstimateLimit   *bool
 
 	BumpMin       *assets.Wei
 	BumpPercent   *uint16
@@ -567,6 +588,8 @@ type GasEstimator struct {
 	TipCapMin     *assets.Wei
 
 	BlockHistory BlockHistoryEstimator `toml:",omitempty"`
+	FeeHistory   FeeHistoryEstimator   `toml:",omitempty"`
+	DAOracle     DAOracle              `toml:",omitempty"`
 }
 
 func (e *GasEstimator) ValidateConfig() (err error) {
@@ -641,6 +664,9 @@ func (e *GasEstimator) setFrom(f *GasEstimator) {
 	if v := f.LimitTransfer; v != nil {
 		e.LimitTransfer = v
 	}
+	if v := f.EstimateLimit; v != nil {
+		e.EstimateLimit = v
+	}
 	if v := f.PriceDefault; v != nil {
 		e.PriceDefault = v
 	}
@@ -658,6 +684,8 @@ func (e *GasEstimator) setFrom(f *GasEstimator) {
 	}
 	e.LimitJobType.setFrom(&f.LimitJobType)
 	e.BlockHistory.setFrom(&f.BlockHistory)
+	e.FeeHistory.setFrom(&f.FeeHistory)
+	e.DAOracle.setFrom(&f.DAOracle)
 }
 
 type GasLimitJobType struct {
@@ -720,6 +748,47 @@ func (e *BlockHistoryEstimator) setFrom(f *BlockHistoryEstimator) {
 	}
 }
 
+type FeeHistoryEstimator struct {
+	CacheTimeout *commonconfig.Duration
+}
+
+func (u *FeeHistoryEstimator) setFrom(f *FeeHistoryEstimator) {
+	if v := f.CacheTimeout; v != nil {
+		u.CacheTimeout = v
+	}
+}
+
+type DAOracle struct {
+	OracleType             DAOracleType
+	OracleAddress          *types.EIP55Address
+	CustomGasPriceCalldata string
+}
+
+type DAOracleType string
+
+const (
+	DAOracleOPStack        = DAOracleType("opstack")
+	DAOracleArbitrum       = DAOracleType("arbitrum")
+	DAOracleZKSync         = DAOracleType("zksync")
+	DAOracleCustomCalldata = DAOracleType("custom_calldata")
+)
+
+func (o DAOracleType) IsValid() bool {
+	switch o {
+	case "", DAOracleOPStack, DAOracleArbitrum, DAOracleZKSync, DAOracleCustomCalldata:
+		return true
+	}
+	return false
+}
+
+func (d *DAOracle) setFrom(f *DAOracle) {
+	d.OracleType = f.OracleType
+	if v := f.OracleAddress; v != nil {
+		d.OracleAddress = v
+	}
+	d.CustomGasPriceCalldata = f.CustomGasPriceCalldata
+}
+
 type KeySpecificConfig []KeySpecific
 
 func (ks KeySpecificConfig) ValidateConfig() (err error) {
@@ -756,6 +825,7 @@ type HeadTracker struct {
 	SamplingInterval        *commonconfig.Duration
 	MaxAllowedFinalityDepth *uint32
 	FinalityTagBypass       *bool
+	PersistenceEnabled      *bool
 }
 
 func (t *HeadTracker) setFrom(f *HeadTracker) {
@@ -773,6 +843,9 @@ func (t *HeadTracker) setFrom(f *HeadTracker) {
 	}
 	if v := f.FinalityTagBypass; v != nil {
 		t.FinalityTagBypass = v
+	}
+	if v := f.PersistenceEnabled; v != nil {
+		t.PersistenceEnabled = v
 	}
 }
 
@@ -800,6 +873,7 @@ type ClientErrors struct {
 	TransactionAlreadyMined           *string `toml:",omitempty"`
 	Fatal                             *string `toml:",omitempty"`
 	ServiceUnavailable                *string `toml:",omitempty"`
+	TooManyResults                    *string `toml:",omitempty"`
 }
 
 func (r *ClientErrors) setFrom(f *ClientErrors) bool {
@@ -845,6 +919,9 @@ func (r *ClientErrors) setFrom(f *ClientErrors) bool {
 	if v := f.ServiceUnavailable; v != nil {
 		r.ServiceUnavailable = v
 	}
+	if v := f.TooManyResults; v != nil {
+		r.TooManyResults = v
+	}
 	return true
 }
 
@@ -859,6 +936,7 @@ type NodePool struct {
 	Errors                     ClientErrors `toml:",omitempty"`
 	EnforceRepeatableRead      *bool
 	DeathDeclarationDelay      *commonconfig.Duration
+	NewHeadsPollInterval       *commonconfig.Duration
 }
 
 func (p *NodePool) setFrom(f *NodePool) {
@@ -891,7 +969,26 @@ func (p *NodePool) setFrom(f *NodePool) {
 	if v := f.DeathDeclarationDelay; v != nil {
 		p.DeathDeclarationDelay = v
 	}
+
+	if v := f.NewHeadsPollInterval; v != nil {
+		p.NewHeadsPollInterval = v
+	}
+
 	p.Errors.setFrom(&f.Errors)
+}
+
+func (p *NodePool) ValidateConfig(finalityTagEnabled *bool) (err error) {
+	if finalityTagEnabled != nil && *finalityTagEnabled {
+		if p.FinalizedBlockPollInterval == nil {
+			err = multierr.Append(err, commonconfig.ErrMissing{Name: "FinalizedBlockPollInterval", Msg: "required when FinalityTagEnabled is true"})
+			return
+		}
+		if p.FinalizedBlockPollInterval.Duration() <= 0 {
+			err = multierr.Append(err, commonconfig.ErrInvalid{Name: "FinalizedBlockPollInterval", Value: p.FinalizedBlockPollInterval,
+				Msg: "must be greater than 0"})
+		}
+	}
+	return
 }
 
 type OCR struct {
@@ -939,19 +1036,8 @@ func (n *Node) ValidateConfig() (err error) {
 		err = multierr.Append(err, commonconfig.ErrEmpty{Name: "Name", Msg: "required for all nodes"})
 	}
 
-	var sendOnly bool
-	if n.SendOnly != nil {
-		sendOnly = *n.SendOnly
-	}
-	if n.WSURL == nil {
-		if !sendOnly {
-			err = multierr.Append(err, commonconfig.ErrMissing{Name: "WSURL", Msg: "required for primary nodes"})
-		}
-	} else if n.WSURL.IsZero() {
-		if !sendOnly {
-			err = multierr.Append(err, commonconfig.ErrEmpty{Name: "WSURL", Msg: "required for primary nodes"})
-		}
-	} else {
+	// relax the check here as WSURL can potentially be empty if LogBroadcaster is disabled (checked in EVMConfig Validation)
+	if n.WSURL != nil && !n.WSURL.IsZero() {
 		switch n.WSURL.Scheme {
 		case "ws", "wss":
 		default:

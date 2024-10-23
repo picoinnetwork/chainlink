@@ -13,6 +13,7 @@ import (
 	ocrtypes "github.com/smartcontractkit/libocr/offchainreporting2plus/types"
 
 	"github.com/smartcontractkit/chainlink-automation/pkg/v3/plugin"
+	"github.com/smartcontractkit/chainlink-common/pkg/logger"
 	"github.com/smartcontractkit/chainlink-common/pkg/sqlutil"
 	commontypes "github.com/smartcontractkit/chainlink-common/pkg/types"
 	"github.com/smartcontractkit/chainlink-common/pkg/types/automation"
@@ -20,7 +21,6 @@ import (
 	evmtypes "github.com/smartcontractkit/chainlink/v2/core/chains/evm/types"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/legacyevm"
 	ac "github.com/smartcontractkit/chainlink/v2/core/gethwrappers/generated/i_automation_v21_plus_common"
-	"github.com/smartcontractkit/chainlink/v2/core/logger"
 	"github.com/smartcontractkit/chainlink/v2/core/services/keystore"
 	evm "github.com/smartcontractkit/chainlink/v2/core/services/ocr2/plugins/ocr2keeper/evmregistry/v21"
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocr2/plugins/ocr2keeper/evmregistry/v21/encoding"
@@ -59,7 +59,7 @@ type OCR2KeeperProvider interface {
 
 // OCR2KeeperRelayer contains the relayer and instantiating functions for OCR2Keeper providers.
 type OCR2KeeperRelayer interface {
-	NewOCR2KeeperProvider(rargs commontypes.RelayArgs, pargs commontypes.PluginArgs) (OCR2KeeperProvider, error)
+	NewOCR2KeeperProvider(ctx context.Context, rargs commontypes.RelayArgs, pargs commontypes.PluginArgs) (OCR2KeeperProvider, error)
 }
 
 // ocr2keeperRelayer is the relayer with added DKG and OCR2Keeper provider functions.
@@ -80,10 +80,7 @@ func NewOCR2KeeperRelayer(ds sqlutil.DataSource, chain legacyevm.Chain, lggr log
 	}
 }
 
-func (r *ocr2keeperRelayer) NewOCR2KeeperProvider(rargs commontypes.RelayArgs, pargs commontypes.PluginArgs) (OCR2KeeperProvider, error) {
-	// TODO https://smartcontract-it.atlassian.net/browse/BCF-2887
-	ctx := context.Background()
-
+func (r *ocr2keeperRelayer) NewOCR2KeeperProvider(ctx context.Context, rargs commontypes.RelayArgs, pargs commontypes.PluginArgs) (OCR2KeeperProvider, error) {
 	cfgWatcher, err := newOCR2KeeperConfigProvider(ctx, r.lggr, r.chain, rargs)
 	if err != nil {
 		return nil, err
@@ -174,8 +171,8 @@ func (t *ocr3keeperProviderContractTransmitter) Transmit(
 	)
 }
 
-func (t *ocr3keeperProviderContractTransmitter) FromAccount() (ocrtypes.Account, error) {
-	return t.contractTransmitter.FromAccount()
+func (t *ocr3keeperProviderContractTransmitter) FromAccount(ctx context.Context) (ocrtypes.Account, error) {
+	return t.contractTransmitter.FromAccount(ctx)
 }
 
 type ocr2keeperProvider struct {
@@ -196,7 +193,7 @@ func (c *ocr2keeperProvider) ContractTransmitter() ocrtypes.ContractTransmitter 
 	return c.contractTransmitter
 }
 
-func (c *ocr2keeperProvider) ChainReader() commontypes.ContractReader {
+func (c *ocr2keeperProvider) ContractReader() commontypes.ContractReader {
 	return nil
 }
 
@@ -218,7 +215,7 @@ func newOCR2KeeperConfigProvider(ctx context.Context, lggr logger.Logger, chain 
 
 	configPoller, err := NewConfigPoller(
 		ctx,
-		lggr.With("contractID", rargs.ContractID),
+		logger.With(lggr, "contractID", rargs.ContractID),
 		CPConfig{
 			chain.Client(),
 			chain.LogPoller(),

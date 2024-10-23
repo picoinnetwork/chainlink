@@ -1,18 +1,22 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity 0.8.24;
 
 import {Internal} from "../../libraries/Internal.sol";
-import {EVM2EVMMultiOffRamp} from "../../offRamp/EVM2EVMMultiOffRamp.sol";
+import {OffRamp} from "../../offRamp/OffRamp.sol";
 
 contract ReportCodec {
-  event ExecuteReportDecoded(Internal.ExecutionReportSingleChain[] report);
-  event CommitReportDecoded(EVM2EVMMultiOffRamp.CommitReport report);
+  event ExecuteReportDecoded(Internal.ExecutionReport[] report);
+  event CommitReportDecoded(OffRamp.CommitReport report);
 
-  function decodeExecuteReport(bytes memory report) public pure returns (Internal.ExecutionReportSingleChain[] memory) {
-    return abi.decode(report, (Internal.ExecutionReportSingleChain[]));
+  function decodeExecuteReport(
+    bytes memory report
+  ) public pure returns (Internal.ExecutionReport[] memory) {
+    return abi.decode(report, (Internal.ExecutionReport[]));
   }
 
-  function decodeCommitReport(bytes memory report) public pure returns (EVM2EVMMultiOffRamp.CommitReport memory) {
-    return abi.decode(report, (EVM2EVMMultiOffRamp.CommitReport));
+  function decodeCommitReport(
+    bytes memory report
+  ) public pure returns (OffRamp.CommitReport memory) {
+    return abi.decode(report, (OffRamp.CommitReport));
   }
 }

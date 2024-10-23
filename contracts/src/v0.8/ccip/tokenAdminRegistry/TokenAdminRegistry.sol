@@ -7,7 +7,7 @@ import {ITokenAdminRegistry} from "../interfaces/ITokenAdminRegistry.sol";
 
 import {OwnerIsCreator} from "../../shared/access/OwnerIsCreator.sol";
 
-import {EnumerableSet} from "../../vendor/openzeppelin-solidity/v4.8.3/contracts/utils/structs/EnumerableSet.sol";
+import {EnumerableSet} from "../../vendor/openzeppelin-solidity/v5.0.2/contracts/utils/structs/EnumerableSet.sol";
 
 /// @notice This contract stores the token pool configuration for all CCIP enabled tokens. It works
 /// on a self-serve basis, where tokens can be registered without intervention from the CCIP owner.
@@ -26,8 +26,6 @@ contract TokenAdminRegistry is ITokenAdminRegistry, ITypeAndVersion, OwnerIsCrea
   event PoolSet(address indexed token, address indexed previousPool, address indexed newPool);
   event AdministratorTransferRequested(address indexed token, address indexed currentAdmin, address indexed newAdmin);
   event AdministratorTransferred(address indexed token, address indexed newAdmin);
-  event DisableReRegistrationSet(address indexed token, bool disabled);
-  event RemovedAdministrator(address token);
   event RegistryModuleAdded(address module);
   event RegistryModuleRemoved(address indexed module);
 
@@ -39,7 +37,7 @@ contract TokenAdminRegistry is ITokenAdminRegistry, ITypeAndVersion, OwnerIsCrea
     address tokenPool; // the token pool for this token. Can be address(0) if not deployed or not configured.
   }
 
-  string public constant override typeAndVersion = "TokenAdminRegistry 1.5.0-dev";
+  string public constant override typeAndVersion = "TokenAdminRegistry 1.5.0";
 
   // Mapping of token address to token configuration
   mapping(address token => TokenConfig) internal s_tokenConfig;
@@ -52,7 +50,9 @@ contract TokenAdminRegistry is ITokenAdminRegistry, ITypeAndVersion, OwnerIsCrea
 
   /// @notice Returns all pools for the given tokens.
   /// @dev Will return address(0) for tokens that do not have a pool.
-  function getPools(address[] calldata tokens) external view returns (address[] memory) {
+  function getPools(
+    address[] calldata tokens
+  ) external view returns (address[] memory) {
     address[] memory pools = new address[](tokens.length);
     for (uint256 i = 0; i < tokens.length; ++i) {
       pools[i] = s_tokenConfig[tokens[i]].tokenPool;
@@ -61,14 +61,18 @@ contract TokenAdminRegistry is ITokenAdminRegistry, ITypeAndVersion, OwnerIsCrea
   }
 
   /// @inheritdoc ITokenAdminRegistry
-  function getPool(address token) external view returns (address) {
+  function getPool(
+    address token
+  ) external view returns (address) {
     return s_tokenConfig[token].tokenPool;
   }
 
   /// @notice Returns the configuration for a token.
   /// @param token The token to get the configuration for.
   /// @return config The configuration for the token.
-  function getTokenConfig(address token) external view returns (TokenConfig memory) {
+  function getTokenConfig(
+    address token
+  ) external view returns (TokenConfig memory) {
     return s_tokenConfig[token];
   }
 
@@ -138,7 +142,9 @@ contract TokenAdminRegistry is ITokenAdminRegistry, ITypeAndVersion, OwnerIsCrea
   /// @notice Accepts the administrator role for a token.
   /// @param localToken The token to accept the administrator role for.
   /// @dev This function can only be called by the pending administrator.
-  function acceptAdminRole(address localToken) external {
+  function acceptAdminRole(
+    address localToken
+  ) external {
     TokenConfig storage config = s_tokenConfig[localToken];
     if (config.pendingAdministrator != msg.sender) {
       revert OnlyPendingAdministrator(msg.sender, localToken);
@@ -189,13 +195,17 @@ contract TokenAdminRegistry is ITokenAdminRegistry, ITypeAndVersion, OwnerIsCrea
   /// @notice Checks if an address is a registry module.
   /// @param module The address to check.
   /// @return True if the address is a registry module, false otherwise.
-  function isRegistryModule(address module) public view returns (bool) {
+  function isRegistryModule(
+    address module
+  ) public view returns (bool) {
     return s_registryModules.contains(module);
   }
 
   /// @notice Adds a new registry module to the list of allowed modules.
   /// @param module The module to add.
-  function addRegistryModule(address module) external onlyOwner {
+  function addRegistryModule(
+    address module
+  ) external onlyOwner {
     if (s_registryModules.add(module)) {
       emit RegistryModuleAdded(module);
     }
@@ -203,7 +213,9 @@ contract TokenAdminRegistry is ITokenAdminRegistry, ITypeAndVersion, OwnerIsCrea
 
   /// @notice Removes a registry module from the list of allowed modules.
   /// @param module The module to remove.
-  function removeRegistryModule(address module) external onlyOwner {
+  function removeRegistryModule(
+    address module
+  ) external onlyOwner {
     if (s_registryModules.remove(module)) {
       emit RegistryModuleRemoved(module);
     }
@@ -214,7 +226,9 @@ contract TokenAdminRegistry is ITokenAdminRegistry, ITypeAndVersion, OwnerIsCrea
   // ================================================================
 
   /// @notice Checks if an address is the administrator of the given token.
-  modifier onlyTokenAdmin(address token) {
+  modifier onlyTokenAdmin(
+    address token
+  ) {
     if (s_tokenConfig[token].administrator != msg.sender) {
       revert OnlyAdministrator(msg.sender, token);
     }

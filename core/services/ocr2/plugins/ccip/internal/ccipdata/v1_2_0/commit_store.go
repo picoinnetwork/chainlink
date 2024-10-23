@@ -14,6 +14,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/smartcontractkit/chainlink-common/pkg/config"
+	"github.com/smartcontractkit/chainlink-common/pkg/logger"
 	cciptypes "github.com/smartcontractkit/chainlink-common/pkg/types/ccip"
 	"github.com/smartcontractkit/chainlink-common/pkg/types/query"
 	"github.com/smartcontractkit/chainlink-common/pkg/types/query/primitives"
@@ -23,14 +24,17 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/logpoller"
 	evmtypes "github.com/smartcontractkit/chainlink/v2/core/chains/evm/types"
 	"github.com/smartcontractkit/chainlink/v2/core/gethwrappers/ccip/generated/commit_store_1_2_0"
-	"github.com/smartcontractkit/chainlink/v2/core/logger"
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocr2/plugins/ccip/abihelpers"
 	ccipconfig "github.com/smartcontractkit/chainlink/v2/core/services/ocr2/plugins/ccip/config"
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocr2/plugins/ccip/internal/ccipcalc"
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocr2/plugins/ccip/internal/ccipdata"
-	"github.com/smartcontractkit/chainlink/v2/core/services/ocr2/plugins/ccip/internal/ccipdata/v1_0_0"
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocr2/plugins/ccip/internal/logpollerutil"
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocr2/plugins/ccip/prices"
+)
+
+const (
+	ExecReportAccepts = "Exec report accepts"
+	ReportAccepted    = "ReportAccepted"
 )
 
 var _ ccipdata.CommitStoreReader = &CommitStore{}
@@ -349,8 +353,7 @@ func (c *CommitStore) GetAcceptedCommitReportsGteTimestamp(ctx context.Context, 
 		return nil, err
 	}
 
-	reportsQuery, err := query.Where(
-		c.address.String(),
+	reportsQuery, err := logpoller.Where(
 		logpoller.NewAddressFilter(c.address),
 		logpoller.NewEventSigFilter(c.reportAcceptedSig),
 		query.Timestamp(uint64(ts.Unix()), primitives.Gte),
@@ -436,11 +439,11 @@ func NewCommitStore(lggr logger.Logger, addr common.Address, ec client.Client, l
 		return nil, err
 	}
 	commitStoreABI := abihelpers.MustParseABI(commit_store_1_2_0.CommitStoreABI)
-	eventSig := abihelpers.MustGetEventID(v1_0_0.ReportAccepted, commitStoreABI)
-	commitReportArgs := abihelpers.MustGetEventInputs(v1_0_0.ReportAccepted, commitStoreABI)
+	eventSig := abihelpers.MustGetEventID(ReportAccepted, commitStoreABI)
+	commitReportArgs := abihelpers.MustGetEventInputs(ReportAccepted, commitStoreABI)
 	filters := []logpoller.Filter{
 		{
-			Name:      logpoller.FilterName(v1_0_0.EXEC_REPORT_ACCEPTS, addr.String()),
+			Name:      logpoller.FilterName(ExecReportAccepts, addr.String()),
 			EventSigs: []common.Hash{eventSig},
 			Addresses: []common.Address{addr},
 			Retention: ccipdata.CommitExecLogsRetention,

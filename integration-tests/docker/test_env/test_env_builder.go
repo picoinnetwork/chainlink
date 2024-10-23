@@ -13,17 +13,19 @@ import (
 	"github.com/rs/zerolog/log"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/smartcontractkit/seth"
+	"github.com/smartcontractkit/chainlink-testing-framework/seth"
 
-	"github.com/smartcontractkit/chainlink-testing-framework/blockchain"
-	ctf_config "github.com/smartcontractkit/chainlink-testing-framework/config"
-	"github.com/smartcontractkit/chainlink-testing-framework/docker/test_env"
-	"github.com/smartcontractkit/chainlink-testing-framework/logging"
-	"github.com/smartcontractkit/chainlink-testing-framework/logstream"
-	"github.com/smartcontractkit/chainlink-testing-framework/networks"
-	"github.com/smartcontractkit/chainlink-testing-framework/testreporters"
-	"github.com/smartcontractkit/chainlink-testing-framework/testsummary"
-	"github.com/smartcontractkit/chainlink-testing-framework/utils/osutil"
+	"github.com/smartcontractkit/chainlink-testing-framework/lib/blockchain"
+	ctf_config "github.com/smartcontractkit/chainlink-testing-framework/lib/config"
+	"github.com/smartcontractkit/chainlink-testing-framework/lib/docker/test_env"
+	"github.com/smartcontractkit/chainlink-testing-framework/lib/logging"
+	"github.com/smartcontractkit/chainlink-testing-framework/lib/logstream"
+	"github.com/smartcontractkit/chainlink-testing-framework/lib/networks"
+	"github.com/smartcontractkit/chainlink-testing-framework/lib/testreporters"
+	"github.com/smartcontractkit/chainlink-testing-framework/lib/testsummary"
+	"github.com/smartcontractkit/chainlink-testing-framework/lib/utils/osutil"
+
+	"github.com/smartcontractkit/chainlink/integration-tests/testconfig/ccip"
 	"github.com/smartcontractkit/chainlink/integration-tests/types/config/node"
 	"github.com/smartcontractkit/chainlink/v2/core/services/chainlink"
 )
@@ -45,6 +47,7 @@ type ChainlinkNodeLogScannerSettings struct {
 type CLTestEnvBuilder struct {
 	hasLogStream                    bool
 	hasKillgrave                    bool
+	jdConfig                        *ccip.JDConfig
 	clNodeConfig                    *chainlink.Config
 	secretsConfig                   string
 	clNodesCount                    int
@@ -206,6 +209,11 @@ func (b *CLTestEnvBuilder) WithoutCleanup() *CLTestEnvBuilder {
 func (b *CLTestEnvBuilder) WithCustomCleanup(customFn func()) *CLTestEnvBuilder {
 	b.cleanUpType = CleanUpTypeCustom
 	b.cleanUpCustomFn = customFn
+	return b
+}
+
+func (b *CLTestEnvBuilder) WithJobDistributor(cfg ccip.JDConfig) *CLTestEnvBuilder {
+	b.jdConfig = &cfg
 	return b
 }
 
@@ -395,6 +403,12 @@ func (b *CLTestEnvBuilder) Build() (*CLClusterTestEnv, error) {
 		log.Warn().Msg("Chainlink node log scanner settings provided, but LogStream is not enabled. Ignoring Chainlink node log scanner settings, as no logs will be available.")
 	}
 
+	if b.jdConfig != nil {
+		err := b.te.StartJobDistributor(b.jdConfig)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// in this case we will use the builder only to start chains, not the cluster, because currently we support only 1 network config per cluster
 	if len(b.privateEthereumNetworks) > 1 {
 		b.te.rpcProviders = make(map[int64]*test_env.RpcProvider)
@@ -409,29 +423,29 @@ func (b *CLTestEnvBuilder) Build() (*CLClusterTestEnv, error) {
 			b.te.rpcProviders[networkConfig.ChainID] = &rpcProvider
 			b.te.EVMNetworks = append(b.te.EVMNetworks, &networkConfig)
 		}
+		if b.clNodesCount > 0 {
+			dereferrencedEvms := make([]blockchain.EVMNetwork, 0)
+			for _, en := range b.te.EVMNetworks {
+				dereferrencedEvms = append(dereferrencedEvms, *en)
+			}
 
-		dereferrencedEvms := make([]blockchain.EVMNetwork, 0)
-		for _, en := range b.te.EVMNetworks {
-			dereferrencedEvms = append(dereferrencedEvms, *en)
+			nodeConfigInToml := b.testConfig.GetNodeConfig()
+
+			nodeConfig, _, err := node.BuildChainlinkNodeConfig(
+				dereferrencedEvms,
+				nodeConfigInToml.BaseConfigTOML,
+				nodeConfigInToml.CommonChainConfigTOML,
+				nodeConfigInToml.ChainConfigTOMLByChainID,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			err = b.te.StartClCluster(nodeConfig, b.clNodesCount, b.secretsConfig, b.testConfig, b.clNodesOpts...)
+			if err != nil {
+				return nil, err
+			}
 		}
-
-		nodeConfigInToml := b.testConfig.GetNodeConfig()
-
-		nodeConfig, _, err := node.BuildChainlinkNodeConfig(
-			dereferrencedEvms,
-			nodeConfigInToml.BaseConfigTOML,
-			nodeConfigInToml.CommonChainConfigTOML,
-			nodeConfigInToml.ChainConfigTOMLByChainID,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		err = b.te.StartClCluster(nodeConfig, b.clNodesCount, b.secretsConfig, b.testConfig, b.clNodesOpts...)
-		if err != nil {
-			return nil, err
-		}
-
 		b.te.isSimulatedNetwork = true
 
 		return b.te, nil
@@ -549,6 +563,7 @@ func (b *CLTestEnvBuilder) Build() (*CLClusterTestEnv, error) {
 	b.l.Info().
 		Str("privateEthereumNetwork", enDesc).
 		Bool("hasKillgrave", b.hasKillgrave).
+		Bool("hasJobDistributor", b.jdConfig != nil).
 		Int("clNodesCount", b.clNodesCount).
 		Strs("customNodeCsaKeys", b.customNodeCsaKeys).
 		Strs("defaultNodeCsaKeys", b.defaultNodeCsaKeys).

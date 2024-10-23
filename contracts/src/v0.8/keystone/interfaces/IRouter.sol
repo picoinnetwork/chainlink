@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity ^0.8.4;
 
 /// @title IRouter - delivers keystone reports to receiver
 interface IRouter {
@@ -17,22 +17,6 @@ interface IRouter {
     SUCCEEDED,
     INVALID_RECEIVER,
     FAILED
-  }
-
-  struct Transmission {
-    address transmitter;
-    // This is true if the receiver is not a contract or does not implement the
-    // `IReceiver` interface.
-    bool invalidReceiver;
-    // Whether the transmission attempt was successful. If `false`, the
-    // transmission can be retried with an increased gas limit.
-    bool success;
-    // The amount of gas allocated for the `IReceiver.onReport` call. uint80
-    // allows storing gas for known EVM block gas limits.
-    // Ensures that the minimum gas requested by the user is available during
-    // the transmission attempt. If the transmission fails (indicated by a
-    // `false` success state), it can be retried with an increased gas limit.
-    uint80 gasLimit;
   }
 
   struct TransmissionInfo {

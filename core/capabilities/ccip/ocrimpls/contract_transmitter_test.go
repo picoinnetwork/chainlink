@@ -7,8 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartcontractkit/chainlink-common/pkg/utils/tests"
+
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/ccip/ocrimpls"
 	cctypes "github.com/smartcontractkit/chainlink/v2/core/capabilities/ccip/types"
+	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/config/toml"
+	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/types"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind/backends"
@@ -16,7 +20,6 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/jmoiron/sqlx"
-	"github.com/onsi/gomega"
 	"github.com/stretchr/testify/require"
 
 	"github.com/smartcontractkit/libocr/commontypes"
@@ -24,7 +27,6 @@ import (
 	ocrtypes "github.com/smartcontractkit/libocr/offchainreporting2plus/types"
 
 	"github.com/smartcontractkit/chainlink-common/pkg/utils/mailbox"
-	txmgrcommon "github.com/smartcontractkit/chainlink/v2/common/txmgr"
 
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/assets"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/client"
@@ -90,7 +92,6 @@ func Test_ContractTransmitter_TransmitWithoutSignatures(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc := tc
-			t.Parallel()
 			testTransmitter(t, tc.pluginType, tc.withSigs, tc.expectedSigsEnabled, tc.report)
 		})
 	}
@@ -103,6 +104,7 @@ func testTransmitter(
 	expectedSigsEnabled bool,
 	report []byte,
 ) {
+	ctx := tests.Context(t)
 	uni := newTestUniverse[[]byte](t, nil)
 
 	c, err := uni.wrapper.LatestConfigDetails(nil, pluginType)
@@ -125,7 +127,7 @@ func testTransmitter(
 	seqNr := uint64(1)
 	attributedSigs := uni.SignReport(t, configDigest, rwi, seqNr)
 
-	account, err := uni.transmitterWithSigs.FromAccount()
+	account, err := uni.transmitterWithSigs.FromAccount(ctx)
 	require.NoError(t, err, "failed to get from account")
 	require.Equal(t, ocrtypes.Account(uni.transmitters[0].Hex()), account, "from account mismatch")
 	if withSigs {
@@ -137,7 +139,7 @@ func testTransmitter(
 	uni.backend.Commit()
 
 	var txStatus uint64
-	gomega.NewWithT(t).Eventually(func() bool {
+	require.Eventually(t, func() bool {
 		uni.backend.Commit()
 		rows, err := uni.db.QueryContext(testutils.Context(t), `SELECT hash FROM evm.tx_attempts LIMIT 1`)
 		require.NoError(t, err, "failed to query txes")
@@ -155,10 +157,10 @@ func testTransmitter(
 		t.Log("tx found:", hexutil.Encode(txHash), "status:", receipt.Status)
 		txStatus = receipt.Status
 		return true
-	}, testutils.WaitTimeout(t), 1*time.Second).Should(gomega.BeTrue())
+	}, testutils.WaitTimeout(t), 1*time.Second)
 
 	// wait for receipt to be written to the db
-	gomega.NewWithT(t).Eventually(func() bool {
+	require.Eventually(t, func() bool {
 		rows, err := uni.db.QueryContext(testutils.Context(t), `SELECT count(*) as cnt FROM evm.receipts LIMIT 1`)
 		require.NoError(t, err, "failed to query receipts")
 		defer rows.Close()
@@ -167,7 +169,7 @@ func testTransmitter(
 			require.NoError(t, rows.Scan(&count), "failed to scan")
 		}
 		return count == 1
-	}, testutils.WaitTimeout(t), 2*time.Second).Should(gomega.BeTrue())
+	}, testutils.WaitTimeout(t), 2*time.Second)
 
 	require.Equal(t, uint64(1), txStatus, "tx status should be success")
 
@@ -402,8 +404,7 @@ func chainWriterConfigRaw(fromAddress common.Address, maxGasPrice *assets.Wei) e
 				},
 			},
 		},
-		SendStrategy: txmgrcommon.NewSendEveryStrategy(),
-		MaxGasPrice:  maxGasPrice,
+		MaxGasPrice: maxGasPrice,
 	}
 }
 
@@ -414,7 +415,7 @@ func makeTestEvmTxm(
 	keyStore keystore.Eth) (txmgr.TxManager, gas.EvmFeeEstimator) {
 	config, dbConfig, evmConfig := MakeTestConfigs(t)
 
-	estimator, err := gas.NewEstimator(logger.TestLogger(t), ethClient, config, evmConfig.GasEstimator())
+	estimator, err := gas.NewEstimator(logger.TestLogger(t), ethClient, config.ChainType(), evmConfig.GasEstimator())
 	require.NoError(t, err, "failed to create gas estimator")
 
 	lggr := logger.TestLogger(t)
@@ -542,6 +543,10 @@ func (t *TestHeadTrackerConfig) SamplingInterval() time.Duration {
 	return 1 * time.Second
 }
 
+func (t *TestHeadTrackerConfig) PersistenceEnabled() bool {
+	return true
+}
+
 var _ evmconfig.HeadTracker = (*TestHeadTrackerConfig)(nil)
 
 type TestEvmConfig struct {
@@ -587,8 +592,30 @@ type TestGasEstimatorConfig struct {
 	bumpThreshold uint64
 }
 
+func (g *TestGasEstimatorConfig) DAOracle() evmconfig.DAOracle {
+	return &TestDAOracleConfig{}
+}
+
+type TestDAOracleConfig struct {
+	evmconfig.DAOracle
+}
+
+func (d *TestDAOracleConfig) OracleType() toml.DAOracleType { return toml.DAOracleOPStack }
+func (d *TestDAOracleConfig) OracleAddress() *types.EIP55Address {
+	a, err := types.NewEIP55Address("0x420000000000000000000000000000000000000F")
+	if err != nil {
+		panic(err)
+	}
+	return &a
+}
+func (d *TestDAOracleConfig) CustomGasPriceCalldata() string { return "" }
+
 func (g *TestGasEstimatorConfig) BlockHistory() evmconfig.BlockHistory {
 	return &TestBlockHistoryConfig{}
+}
+
+func (g *TestGasEstimatorConfig) FeeHistory() evmconfig.FeeHistory {
+	return &TestFeeHistoryConfig{}
 }
 
 func (g *TestGasEstimatorConfig) EIP1559DynamicFees() bool   { return false }
@@ -613,6 +640,7 @@ func (g *TestGasEstimatorConfig) LimitJobType() evmconfig.LimitJobType {
 func (g *TestGasEstimatorConfig) PriceMaxKey(addr common.Address) *assets.Wei {
 	return assets.GWei(1)
 }
+func (g *TestGasEstimatorConfig) EstimateLimit() bool { return false }
 
 func (e *TestEvmConfig) GasEstimator() evmconfig.GasEstimator {
 	return &TestGasEstimatorConfig{bumpThreshold: e.BumpThreshold}
@@ -637,6 +665,10 @@ func (b *TestBlockHistoryConfig) BlockDelay() uint16                { return 42 
 func (b *TestBlockHistoryConfig) BlockHistorySize() uint16          { return 42 }
 func (b *TestBlockHistoryConfig) EIP1559FeeCapBufferBlocks() uint16 { return 42 }
 func (b *TestBlockHistoryConfig) TransactionPercentile() uint16     { return 42 }
+
+type TestFeeHistoryConfig struct {
+	evmconfig.FeeHistory
+}
 
 type transactionsConfig struct {
 	evmconfig.Transactions

@@ -41,7 +41,7 @@ import (
 	datastreamsmercury "github.com/smartcontractkit/chainlink-data-streams/mercury"
 	"github.com/smartcontractkit/chainlink/v2/core/bridges"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/assets"
-	token "github.com/smartcontractkit/chainlink/v2/core/gethwrappers/generated/link_token_interface"
+	"github.com/smartcontractkit/chainlink/v2/core/gethwrappers/generated/link_token_interface"
 	"github.com/smartcontractkit/chainlink/v2/core/gethwrappers/llo-feeds/generated/fee_manager"
 	"github.com/smartcontractkit/chainlink/v2/core/gethwrappers/llo-feeds/generated/reward_manager"
 	"github.com/smartcontractkit/chainlink/v2/core/gethwrappers/llo-feeds/generated/verifier"
@@ -98,11 +98,11 @@ func setupBlockchain(t *testing.T) (*bind.TransactOpts, *backends.SimulatedBacke
 	t.Cleanup(stopMining)
 
 	// Deploy contracts
-	linkTokenAddress, _, linkToken, err := token.DeployLinkToken(steve, backend)
+	linkTokenAddress, _, linkToken, err := link_token_interface.DeployLinkToken(steve, backend)
 	require.NoError(t, err)
 	_, err = linkToken.Transfer(steve, steve.From, big.NewInt(1000))
 	require.NoError(t, err)
-	nativeTokenAddress, _, nativeToken, err := token.DeployLinkToken(steve, backend)
+	nativeTokenAddress, _, nativeToken, err := link_token_interface.DeployLinkToken(steve, backend)
 	require.NoError(t, err)
 	_, err = nativeToken.Transfer(steve, steve.From, big.NewInt(1000))
 	require.NoError(t, err)
@@ -159,7 +159,7 @@ func integration_MercuryV1(t *testing.T) {
 	serverKey := csakey.MustNewV2XXXTestingOnly(big.NewInt(-1))
 	serverPubKey := serverKey.PublicKey
 	srv := NewMercuryServer(t, ed25519.PrivateKey(serverKey.Raw()), reqs, func() []byte {
-		report, err := (&reportcodecv1.ReportCodec{}).BuildReport(v1.ReportFields{BenchmarkPrice: big.NewInt(234567), Bid: big.NewInt(1), Ask: big.NewInt(1), CurrentBlockHash: make([]byte, 32)})
+		report, err := (&reportcodecv1.ReportCodec{}).BuildReport(ctx, v1.ReportFields{BenchmarkPrice: big.NewInt(234567), Bid: big.NewInt(1), Ask: big.NewInt(1), CurrentBlockHash: make([]byte, 32)})
 		if err != nil {
 			panic(err)
 		}
@@ -284,7 +284,7 @@ func integration_MercuryV1(t *testing.T) {
 		}
 	}
 	// Setup config on contract
-	onchainConfig, err := (datastreamsmercury.StandardOnchainConfigCodec{}).Encode(rawOnchainConfig)
+	onchainConfig, err := (datastreamsmercury.StandardOnchainConfigCodec{}).Encode(ctx, rawOnchainConfig)
 	require.NoError(t, err)
 
 	reportingPluginConfig, err := json.Marshal(rawReportingPluginConfig)
@@ -302,8 +302,9 @@ func integration_MercuryV1(t *testing.T) {
 		[]int{len(nodes)},    // S
 		oracles,
 		reportingPluginConfig, // reportingPluginConfig []byte,
-		250*time.Millisecond,  // Max duration observation
-		int(f),                // f
+		nil,
+		250*time.Millisecond, // Max duration observation
+		int(f),               // f
 		onchainConfig,
 	)
 
@@ -345,6 +346,7 @@ func integration_MercuryV1(t *testing.T) {
 	}
 
 	t.Run("receives at least one report per feed from each oracle when EAs are at 100% reliability", func(t *testing.T) {
+		ctx := testutils.Context(t)
 		// Expect at least one report per feed from each oracle
 		seen := make(map[[32]byte]map[credentials.StaticSizedPublicKey]struct{})
 		for i := range feeds {
@@ -372,9 +374,9 @@ func integration_MercuryV1(t *testing.T) {
 				continue // already saw all oracles for this feed
 			}
 
-			num, err := (&reportcodecv1.ReportCodec{}).CurrentBlockNumFromReport(ocr2types.Report(report.([]byte)))
+			num, err := (&reportcodecv1.ReportCodec{}).CurrentBlockNumFromReport(ctx, ocr2types.Report(report.([]byte)))
 			require.NoError(t, err)
-			currentBlock, err := backend.BlockByNumber(testutils.Context(t), nil)
+			currentBlock, err := backend.BlockByNumber(ctx, nil)
 			require.NoError(t, err)
 
 			assert.GreaterOrEqual(t, currentBlock.Number().Int64(), num)
@@ -407,6 +409,7 @@ func integration_MercuryV1(t *testing.T) {
 	})
 
 	t.Run("receives at least one report per feed from each oracle when EAs are at 80% reliability", func(t *testing.T) {
+		ctx := testutils.Context(t)
 		pError.Store(20) // 20% chance of EA error
 
 		// Expect at least one report per feed from each oracle
@@ -436,7 +439,7 @@ func integration_MercuryV1(t *testing.T) {
 				continue // already saw all oracles for this feed
 			}
 
-			num, err := (&reportcodecv1.ReportCodec{}).CurrentBlockNumFromReport(ocr2types.Report(report.([]byte)))
+			num, err := (&reportcodecv1.ReportCodec{}).CurrentBlockNumFromReport(ctx, ocr2types.Report(report.([]byte)))
 			require.NoError(t, err)
 			currentBlock, err := backend.BlockByNumber(testutils.Context(t), nil)
 			require.NoError(t, err)
@@ -516,7 +519,7 @@ func integration_MercuryV2(t *testing.T) {
 	serverKey := csakey.MustNewV2XXXTestingOnly(big.NewInt(-1))
 	serverPubKey := serverKey.PublicKey
 	srv := NewMercuryServer(t, ed25519.PrivateKey(serverKey.Raw()), reqs, func() []byte {
-		report, err := (&reportcodecv2.ReportCodec{}).BuildReport(v2.ReportFields{BenchmarkPrice: big.NewInt(234567), LinkFee: big.NewInt(1), NativeFee: big.NewInt(1)})
+		report, err := (&reportcodecv2.ReportCodec{}).BuildReport(ctx, v2.ReportFields{BenchmarkPrice: big.NewInt(234567), LinkFee: big.NewInt(1), NativeFee: big.NewInt(1)})
 		if err != nil {
 			panic(err)
 		}
@@ -635,7 +638,7 @@ func integration_MercuryV2(t *testing.T) {
 	}
 
 	// Setup config on contract
-	onchainConfig, err := (datastreamsmercury.StandardOnchainConfigCodec{}).Encode(rawOnchainConfig)
+	onchainConfig, err := (datastreamsmercury.StandardOnchainConfigCodec{}).Encode(ctx, rawOnchainConfig)
 	require.NoError(t, err)
 
 	reportingPluginConfig, err := json.Marshal(rawReportingPluginConfig)
@@ -653,8 +656,9 @@ func integration_MercuryV2(t *testing.T) {
 		[]int{len(nodes)},    // S
 		oracles,
 		reportingPluginConfig, // reportingPluginConfig []byte,
-		250*time.Millisecond,  // Max duration observation
-		int(f),                // f
+		nil,
+		250*time.Millisecond, // Max duration observation
+		int(f),               // f
 		onchainConfig,
 	)
 
@@ -810,7 +814,7 @@ func integration_MercuryV3(t *testing.T) {
 		k := csakey.MustNewV2XXXTestingOnly(big.NewInt(int64(-(i + 1))))
 		reqs := make(chan request, 100)
 		srv := NewMercuryServer(t, ed25519.PrivateKey(k.Raw()), reqs, func() []byte {
-			report, err := (&reportcodecv3.ReportCodec{}).BuildReport(v3.ReportFields{BenchmarkPrice: big.NewInt(234567), Bid: big.NewInt(1), Ask: big.NewInt(1), LinkFee: big.NewInt(1), NativeFee: big.NewInt(1)})
+			report, err := (&reportcodecv3.ReportCodec{}).BuildReport(ctx, v3.ReportFields{BenchmarkPrice: big.NewInt(234567), Bid: big.NewInt(1), Ask: big.NewInt(1), LinkFee: big.NewInt(1), NativeFee: big.NewInt(1)})
 			if err != nil {
 				panic(err)
 			}
@@ -927,7 +931,7 @@ func integration_MercuryV3(t *testing.T) {
 	}
 
 	// Setup config on contract
-	onchainConfig, err := (datastreamsmercury.StandardOnchainConfigCodec{}).Encode(rawOnchainConfig)
+	onchainConfig, err := (datastreamsmercury.StandardOnchainConfigCodec{}).Encode(ctx, rawOnchainConfig)
 	require.NoError(t, err)
 
 	reportingPluginConfig, err := json.Marshal(rawReportingPluginConfig)
@@ -945,8 +949,9 @@ func integration_MercuryV3(t *testing.T) {
 		[]int{len(nodes)},    // S
 		oracles,
 		reportingPluginConfig, // reportingPluginConfig []byte,
-		250*time.Millisecond,  // Max duration observation
-		int(f),                // f
+		nil,
+		250*time.Millisecond, // Max duration observation
+		int(f),               // f
 		onchainConfig,
 	)
 
@@ -1105,7 +1110,7 @@ func integration_MercuryV4(t *testing.T) {
 		k := csakey.MustNewV2XXXTestingOnly(big.NewInt(int64(-(i + 1))))
 		reqs := make(chan request, 100)
 		srv := NewMercuryServer(t, ed25519.PrivateKey(k.Raw()), reqs, func() []byte {
-			report, err := (&reportcodecv4.ReportCodec{}).BuildReport(v4.ReportFields{BenchmarkPrice: big.NewInt(234567), Bid: big.NewInt(1), Ask: big.NewInt(1), LinkFee: big.NewInt(1), NativeFee: big.NewInt(1), MarketStatus: 1})
+			report, err := (&reportcodecv4.ReportCodec{}).BuildReport(ctx, v4.ReportFields{BenchmarkPrice: big.NewInt(234567), LinkFee: big.NewInt(1), NativeFee: big.NewInt(1), MarketStatus: 1})
 			if err != nil {
 				panic(err)
 			}
@@ -1205,8 +1210,6 @@ func integration_MercuryV4(t *testing.T) {
 	for i, node := range nodes {
 		for j, feed := range feeds {
 			bmBridge := createBridge(fmt.Sprintf("benchmarkprice-%d", j), i, feed.baseBenchmarkPrice, 0, node.App.BridgeORM())
-			bidBridge := createBridge(fmt.Sprintf("bid-%d", j), i, feed.baseBid, 0, node.App.BridgeORM())
-			askBridge := createBridge(fmt.Sprintf("ask-%d", j), i, feed.baseAsk, 0, node.App.BridgeORM())
 			marketStatusBridge := createBridge(fmt.Sprintf("marketstatus-%d", j), i, nil, feed.baseMarketStatus, node.App.BridgeORM())
 
 			addV4MercuryJob(
@@ -1217,8 +1220,6 @@ func integration_MercuryV4(t *testing.T) {
 				bootstrapPeerID,
 				bootstrapNodePort,
 				bmBridge,
-				bidBridge,
-				askBridge,
 				marketStatusBridge,
 				servers,
 				clientPubKeys[i],
@@ -1231,7 +1232,7 @@ func integration_MercuryV4(t *testing.T) {
 	}
 
 	// Setup config on contract
-	onchainConfig, err := (datastreamsmercury.StandardOnchainConfigCodec{}).Encode(rawOnchainConfig)
+	onchainConfig, err := (datastreamsmercury.StandardOnchainConfigCodec{}).Encode(ctx, rawOnchainConfig)
 	require.NoError(t, err)
 
 	reportingPluginConfig, err := json.Marshal(rawReportingPluginConfig)
@@ -1249,8 +1250,9 @@ func integration_MercuryV4(t *testing.T) {
 		[]int{len(nodes)},    // S
 		oracles,
 		reportingPluginConfig, // reportingPluginConfig []byte,
-		250*time.Millisecond,  // Max duration observation
-		int(f),                // f
+		nil,
+		250*time.Millisecond, // Max duration observation
+		int(f),               // f
 		onchainConfig,
 	)
 
@@ -1312,8 +1314,6 @@ func integration_MercuryV4(t *testing.T) {
 
 			assert.GreaterOrEqual(t, int(reportElems["observationsTimestamp"].(uint32)), int(testStartTimeStamp))
 			assert.InDelta(t, feed.baseBenchmarkPrice.Int64(), reportElems["benchmarkPrice"].(*big.Int).Int64(), 5000000)
-			assert.InDelta(t, feed.baseBid.Int64(), reportElems["bid"].(*big.Int).Int64(), 5000000)
-			assert.InDelta(t, feed.baseAsk.Int64(), reportElems["ask"].(*big.Int).Int64(), 5000000)
 			assert.NotZero(t, reportElems["validFromTimestamp"].(uint32))
 			assert.GreaterOrEqual(t, reportElems["observationsTimestamp"].(uint32), reportElems["validFromTimestamp"].(uint32))
 			assert.Equal(t, expectedExpiresAt, reportElems["expiresAt"].(uint32))

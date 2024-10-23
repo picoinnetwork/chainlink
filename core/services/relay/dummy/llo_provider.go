@@ -11,16 +11,21 @@ import (
 	relaytypes "github.com/smartcontractkit/chainlink-common/pkg/types"
 	llotypes "github.com/smartcontractkit/chainlink-common/pkg/types/llo"
 	"github.com/smartcontractkit/chainlink/v2/core/logger"
-	"github.com/smartcontractkit/chainlink/v2/core/services/llo"
 )
 
 var _ commontypes.LLOProvider = (*lloProvider)(nil)
 
+type Transmitter interface {
+	services.Service
+	llotypes.Transmitter
+}
+
 type lloProvider struct {
 	cp                     commontypes.ConfigProvider
-	transmitter            llo.Transmitter
+	transmitter            Transmitter
 	logger                 logger.Logger
 	channelDefinitionCache llotypes.ChannelDefinitionCache
+	shouldRetireCache      llotypes.ShouldRetireCache
 
 	ms services.MultiStart
 }
@@ -28,14 +33,16 @@ type lloProvider struct {
 func NewLLOProvider(
 	lggr logger.Logger,
 	cp commontypes.ConfigProvider,
-	transmitter llo.Transmitter,
+	transmitter Transmitter,
 	channelDefinitionCache llotypes.ChannelDefinitionCache,
+	shouldRetireCache llotypes.ShouldRetireCache,
 ) relaytypes.LLOProvider {
 	return &lloProvider{
 		cp,
 		transmitter,
 		lggr.Named("LLOProvider"),
 		channelDefinitionCache,
+		shouldRetireCache,
 		services.MultiStart{},
 	}
 }
@@ -65,16 +72,12 @@ func (p *lloProvider) HealthReport() map[string]error {
 	return report
 }
 
-func (p *lloProvider) ContractConfigTracker() ocrtypes.ContractConfigTracker {
-	return p.cp.ContractConfigTracker()
+func (p *lloProvider) ContractConfigTrackers() (cps []ocrtypes.ContractConfigTracker) {
+	return []ocrtypes.ContractConfigTracker{p.cp.ContractConfigTracker()}
 }
 
 func (p *lloProvider) OffchainConfigDigester() ocrtypes.OffchainConfigDigester {
 	return p.cp.OffchainConfigDigester()
-}
-
-func (p *lloProvider) OnchainConfigCodec() llo.OnchainConfigCodec {
-	return &llo.JSONOnchainConfigCodec{}
 }
 
 func (p *lloProvider) ContractTransmitter() llotypes.Transmitter {
@@ -83,4 +86,8 @@ func (p *lloProvider) ContractTransmitter() llotypes.Transmitter {
 
 func (p *lloProvider) ChannelDefinitionCache() llotypes.ChannelDefinitionCache {
 	return p.channelDefinitionCache
+}
+
+func (p *lloProvider) ShouldRetireCache() llotypes.ShouldRetireCache {
+	return p.shouldRetireCache
 }

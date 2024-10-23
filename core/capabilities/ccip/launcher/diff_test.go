@@ -38,7 +38,7 @@ func Test_diff(t *testing.T) {
 					IDsToDONs: map[registrysyncer.DonID]registrysyncer.DON{
 						1: defaultRegistryDon,
 					},
-					IDsToNodes: map[types.PeerID]kcr.CapabilitiesRegistryNodeInfo{},
+					IDsToNodes: map[types.PeerID]kcr.INodeInfoProviderNodeInfo{},
 				},
 				newState: registrysyncer.LocalRegistry{
 					IDsToCapabilities: map[string]registrysyncer.Capability{
@@ -47,7 +47,7 @@ func Test_diff(t *testing.T) {
 					IDsToDONs: map[registrysyncer.DonID]registrysyncer.DON{
 						1: defaultRegistryDon,
 					},
-					IDsToNodes: map[types.PeerID]kcr.CapabilitiesRegistryNodeInfo{},
+					IDsToNodes: map[types.PeerID]kcr.INodeInfoProviderNodeInfo{},
 				},
 			},
 			want: diffResult{
@@ -340,13 +340,4 @@ func Test_isMemberOfDON(t *testing.T) {
 	}
 	require.True(t, isMemberOfDON(don, ragep2ptypes.PeerID(p2pkey.MustNewV2XXXTestingOnly(big.NewInt(1)).PeerID())))
 	require.False(t, isMemberOfDON(don, ragep2ptypes.PeerID(p2pkey.MustNewV2XXXTestingOnly(big.NewInt(5)).PeerID())))
-}
-
-func Test_isMemberOfBootstrapSubcommittee(t *testing.T) {
-	var bootstrapKeys [][32]byte
-	for i := range [4]struct{}{} {
-		bootstrapKeys = append(bootstrapKeys, p2pkey.MustNewV2XXXTestingOnly(big.NewInt(int64(i+1))).PeerID())
-	}
-	require.True(t, isMemberOfBootstrapSubcommittee(bootstrapKeys, p2pID1))
-	require.False(t, isMemberOfBootstrapSubcommittee(bootstrapKeys, getP2PID(5)))
 }

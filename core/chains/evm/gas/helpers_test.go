@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/assets"
-	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/config/chaintype"
 	evmtypes "github.com/smartcontractkit/chainlink/v2/core/chains/evm/types"
 )
 
@@ -122,27 +121,6 @@ func (m *MockBlockHistoryConfig) TransactionPercentile() uint16 {
 	return m.TransactionPercentileF
 }
 
-type MockConfig struct {
-	ChainTypeF          string
-	FinalityTagEnabledF bool
-}
-
-func NewMockConfig() *MockConfig {
-	return &MockConfig{}
-}
-
-func (m *MockConfig) ChainType() chaintype.ChainType {
-	return chaintype.ChainType(m.ChainTypeF)
-}
-
-func (m *MockConfig) FinalityDepth() uint32 {
-	panic("not implemented") // TODO: Implement
-}
-
-func (m *MockConfig) FinalityTagEnabled() bool {
-	return m.FinalityTagEnabledF
-}
-
 type MockGasEstimatorConfig struct {
 	EIP1559DynamicFeesF bool
 	BumpPercentF        uint16
@@ -157,6 +135,7 @@ type MockGasEstimatorConfig struct {
 	FeeCapDefaultF      *assets.Wei
 	LimitMaxF           uint64
 	ModeF               string
+	EstimateLimitF      bool
 }
 
 func NewMockGasConfig() *MockGasEstimatorConfig {
@@ -213,4 +192,8 @@ func (m *MockGasEstimatorConfig) LimitMax() uint64 {
 
 func (m *MockGasEstimatorConfig) Mode() string {
 	return m.ModeF
+}
+
+func (m *MockGasEstimatorConfig) EstimateLimit() bool {
+	return m.EstimateLimitF
 }

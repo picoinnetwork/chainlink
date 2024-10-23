@@ -19,7 +19,7 @@ import (
 	"gopkg.in/guregu/null.v4"
 
 	"github.com/smartcontractkit/chainlink-common/pkg/codec"
-	"github.com/smartcontractkit/chainlink-testing-framework/docker/test_env"
+	"github.com/smartcontractkit/chainlink-testing-framework/lib/docker/test_env"
 	evmtypes "github.com/smartcontractkit/chainlink/v2/core/services/relay/evm/types"
 
 	"github.com/smartcontractkit/chainlink/v2/core/services/job"
@@ -198,6 +198,7 @@ func BuildMedianOCR2ConfigLocal(workerNodes []*client.ChainlinkClient, ocrOffcha
 			AlphaAcceptPPB:      1,
 			DeltaC:              time.Minute * 30,
 		}.Encode(), // reportingPluginConfig []byte,
+		nil,
 		5*time.Second, // maxDurationQuery time.Duration,
 		5*time.Second, // maxDurationObservation time.Duration,
 		5*time.Second, // maxDurationReport time.Duration,

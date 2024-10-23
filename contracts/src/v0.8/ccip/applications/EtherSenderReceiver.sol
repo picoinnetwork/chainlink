@@ -43,7 +43,9 @@ contract EtherSenderReceiver is CCIPReceiver, ITypeAndVersion {
   IWrappedNative public immutable i_weth;
 
   /// @param router The CCIP router address.
-  constructor(address router) CCIPReceiver(router) {
+  constructor(
+    address router
+  ) CCIPReceiver(router) {
     i_weth = IWrappedNative(CCIPRouter(router).getWrappedNative());
     i_weth.approve(router, type(uint256).max);
   }
@@ -115,11 +117,9 @@ contract EtherSenderReceiver is CCIPReceiver, ITypeAndVersion {
   /// @notice Validate the message content.
   /// @dev Only allows a single token to be sent. Always overwritten to be address(i_weth)
   /// and receiver is always msg.sender.
-  function _validatedMessage(Client.EVM2AnyMessage calldata message)
-    internal
-    view
-    returns (Client.EVM2AnyMessage memory)
-  {
+  function _validatedMessage(
+    Client.EVM2AnyMessage calldata message
+  ) internal view returns (Client.EVM2AnyMessage memory) {
     Client.EVM2AnyMessage memory validatedMessage = message;
 
     if (validatedMessage.tokenAmounts.length != 1) {
@@ -132,7 +132,9 @@ contract EtherSenderReceiver is CCIPReceiver, ITypeAndVersion {
     return validatedMessage;
   }
 
-  function _validateFeeToken(Client.EVM2AnyMessage calldata message) internal view {
+  function _validateFeeToken(
+    Client.EVM2AnyMessage calldata message
+  ) internal view {
     uint256 tokenAmount = message.tokenAmounts[0].amount;
 
     if (message.feeToken != address(0)) {
@@ -148,7 +150,9 @@ contract EtherSenderReceiver is CCIPReceiver, ITypeAndVersion {
   /// @param message The CCIP message containing the wrapped ether amount and the final receiver.
   /// @dev The code below should never revert if the message being is valid according
   /// to the above _validatedMessage and _validateFeeToken functions.
-  function _ccipReceive(Client.Any2EVMMessage memory message) internal override {
+  function _ccipReceive(
+    Client.Any2EVMMessage memory message
+  ) internal override {
     address receiver = abi.decode(message.data, (address));
 
     if (message.destTokenAmounts.length != 1) {

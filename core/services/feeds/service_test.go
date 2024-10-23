@@ -19,6 +19,7 @@ import (
 
 	commonconfig "github.com/smartcontractkit/chainlink-common/pkg/config"
 	"github.com/smartcontractkit/chainlink-common/pkg/services/servicetest"
+	proto "github.com/smartcontractkit/chainlink-protos/orchestrator/feedsmanager"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/headtracker"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/types"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/utils/big"
@@ -32,7 +33,6 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/services/chainlink"
 	"github.com/smartcontractkit/chainlink/v2/core/services/feeds"
 	"github.com/smartcontractkit/chainlink/v2/core/services/feeds/mocks"
-	"github.com/smartcontractkit/chainlink/v2/core/services/feeds/proto"
 	"github.com/smartcontractkit/chainlink/v2/core/services/job"
 	jobmocks "github.com/smartcontractkit/chainlink/v2/core/services/job/mocks"
 	"github.com/smartcontractkit/chainlink/v2/core/services/keystore/keys/csakey"
@@ -40,7 +40,6 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/services/keystore/keys/ocrkey"
 	ksmocks "github.com/smartcontractkit/chainlink/v2/core/services/keystore/mocks"
 	"github.com/smartcontractkit/chainlink/v2/core/services/pipeline"
-	evmrelay "github.com/smartcontractkit/chainlink/v2/core/services/relay/evm"
 	"github.com/smartcontractkit/chainlink/v2/core/services/versioning"
 	"github.com/smartcontractkit/chainlink/v2/core/testdata/testspecs"
 	"github.com/smartcontractkit/chainlink/v2/core/utils/crypto"
@@ -186,15 +185,14 @@ func setupTestServiceCfg(t *testing.T, overrideCfg func(c *chainlink.Config, s *
 	gcfg := configtest.NewGeneralConfig(t, overrideCfg)
 	keyStore := new(ksmocks.Master)
 	ethKeyStore := cltest.NewKeyStore(t, db).Eth()
-	relayExtenders := evmtest.NewChainRelayExtenders(t, evmtest.TestChainOpts{DB: db, GeneralConfig: gcfg,
+	legacyChains := evmtest.NewLegacyChains(t, evmtest.TestChainOpts{DB: db, GeneralConfig: gcfg,
 		HeadTracker: headtracker.NullTracker, KeyStore: ethKeyStore})
-	legacyChains := evmrelay.NewLegacyChainsFromRelayerExtenders(relayExtenders)
 	keyStore.On("Eth").Return(ethKeyStore)
 	keyStore.On("CSA").Return(csaKeystore)
 	keyStore.On("P2P").Return(p2pKeystore)
 	keyStore.On("OCR").Return(ocr1Keystore)
 	keyStore.On("OCR2").Return(ocr2Keystore)
-	svc := feeds.NewService(orm, jobORM, db, spawner, keyStore, gcfg, gcfg.Insecure(), gcfg.JobPipeline(), gcfg.OCR(), gcfg.OCR2(), legacyChains, lggr, "1.0.0", nil)
+	svc := feeds.NewService(orm, jobORM, db, spawner, keyStore, gcfg, gcfg.Feature(), gcfg.Insecure(), gcfg.JobPipeline(), gcfg.OCR(), gcfg.OCR2(), legacyChains, lggr, "1.0.0", nil)
 	svc.SetConnectionsManager(connMgr)
 
 	return &TestService{
@@ -263,6 +261,149 @@ func Test_Service_RegisterManager(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, actual, id)
+}
+
+func Test_Service_RegisterManager_MultiFeedsManager(t *testing.T) {
+	t.Parallel()
+
+	key := cltest.DefaultCSAKey
+
+	var (
+		id        = int64(1)
+		pubKeyHex = "0f17c3bf72de8beef6e2d17a14c0a972f5d7e0e66e70722373f12b88382d40f9"
+	)
+
+	var pubKey crypto.PublicKey
+	_, err := hex.Decode([]byte(pubKeyHex), pubKey)
+	require.NoError(t, err)
+
+	var (
+		mgr = feeds.FeedsManager{
+			Name:      "FMS",
+			URI:       "localhost:8080",
+			PublicKey: pubKey,
+		}
+		params = feeds.RegisterManagerParams{
+			Name:      "FMS",
+			URI:       "localhost:8080",
+			PublicKey: pubKey,
+		}
+	)
+
+	svc := setupTestServiceCfg(t, func(c *chainlink.Config, s *chainlink.Secrets) {
+		var multiFeedsManagers = true
+		c.Feature.MultiFeedsManagers = &multiFeedsManagers
+	})
+	ctx := testutils.Context(t)
+
+	svc.orm.On("ManagerExists", ctx, params.PublicKey).Return(false, nil)
+	svc.orm.On("CreateManager", mock.Anything, &mgr, mock.Anything).
+		Return(id, nil)
+	svc.orm.On("CreateBatchChainConfig", mock.Anything, params.ChainConfigs, mock.Anything).
+		Return([]int64{}, nil)
+	svc.csaKeystore.On("GetAll").Return([]csakey.KeyV2{key}, nil)
+	// ListManagers runs in a goroutine so it might be called.
+	svc.orm.On("ListManagers", ctx).Return([]feeds.FeedsManager{mgr}, nil).Maybe()
+	transactCall := svc.orm.On("Transact", mock.Anything, mock.Anything)
+	transactCall.Run(func(args mock.Arguments) {
+		fn := args[1].(func(orm feeds.ORM) error)
+		transactCall.ReturnArguments = mock.Arguments{fn(svc.orm)}
+	})
+	svc.connMgr.On("Connect", mock.IsType(feeds.ConnectOpts{}))
+
+	actual, err := svc.RegisterManager(ctx, params)
+	// We need to stop the service because the manager will attempt to make a
+	// connection
+	svc.Close()
+	require.NoError(t, err)
+
+	assert.Equal(t, actual, id)
+}
+
+func Test_Service_RegisterManager_InvalidCreateManager(t *testing.T) {
+	t.Parallel()
+
+	var (
+		id        = int64(1)
+		pubKeyHex = "0f17c3bf72de8beef6e2d17a14c0a972f5d7e0e66e70722373f12b88382d40f9"
+	)
+
+	var pubKey crypto.PublicKey
+	_, err := hex.Decode([]byte(pubKeyHex), pubKey)
+	require.NoError(t, err)
+
+	var (
+		mgr = feeds.FeedsManager{
+			Name:      "FMS",
+			URI:       "localhost:8080",
+			PublicKey: pubKey,
+		}
+		params = feeds.RegisterManagerParams{
+			Name:      "FMS",
+			URI:       "localhost:8080",
+			PublicKey: pubKey,
+		}
+	)
+
+	svc := setupTestService(t)
+
+	svc.orm.On("CountManagers", mock.Anything).Return(int64(0), nil)
+	svc.orm.On("CreateManager", mock.Anything, &mgr, mock.Anything).
+		Return(id, errors.New("orm error"))
+	// ListManagers runs in a goroutine so it might be called.
+	svc.orm.On("ListManagers", testutils.Context(t)).Return([]feeds.FeedsManager{mgr}, nil).Maybe()
+
+	transactCall := svc.orm.On("Transact", mock.Anything, mock.Anything)
+	transactCall.Run(func(args mock.Arguments) {
+		fn := args[1].(func(orm feeds.ORM) error)
+		transactCall.ReturnArguments = mock.Arguments{fn(svc.orm)}
+	})
+	_, err = svc.RegisterManager(testutils.Context(t), params)
+	// We need to stop the service because the manager will attempt to make a
+	// connection
+	svc.Close()
+	require.Error(t, err)
+	assert.Equal(t, "orm error", err.Error())
+}
+
+func Test_Service_RegisterManager_DuplicateFeedsManager(t *testing.T) {
+	t.Parallel()
+
+	var pubKeyHex = "0f17c3bf72de8beef6e2d17a14c0a972f5d7e0e66e70722373f12b88382d40f9"
+	var pubKey crypto.PublicKey
+	_, err := hex.Decode([]byte(pubKeyHex), pubKey)
+	require.NoError(t, err)
+
+	var (
+		mgr = feeds.FeedsManager{
+			Name:      "FMS",
+			URI:       "localhost:8080",
+			PublicKey: pubKey,
+		}
+		params = feeds.RegisterManagerParams{
+			Name:      "FMS",
+			URI:       "localhost:8080",
+			PublicKey: pubKey,
+		}
+	)
+
+	svc := setupTestServiceCfg(t, func(c *chainlink.Config, s *chainlink.Secrets) {
+		var multiFeedsManagers = true
+		c.Feature.MultiFeedsManagers = &multiFeedsManagers
+	})
+	ctx := testutils.Context(t)
+
+	svc.orm.On("ManagerExists", ctx, params.PublicKey).Return(true, nil)
+	// ListManagers runs in a goroutine so it might be called.
+	svc.orm.On("ListManagers", ctx).Return([]feeds.FeedsManager{mgr}, nil).Maybe()
+
+	_, err = svc.RegisterManager(ctx, params)
+	// We need to stop the service because the manager will attempt to make a
+	// connection
+	svc.Close()
+	require.Error(t, err)
+
+	assert.Equal(t, "manager was previously registered using the same public key", err.Error())
 }
 
 func Test_Service_ListManagers(t *testing.T) {
@@ -342,76 +483,94 @@ func Test_Service_ListManagersByIDs(t *testing.T) {
 	assert.Equal(t, mgrs, actual)
 }
 
-func Test_Service_CountManagers(t *testing.T) {
-	t.Parallel()
-	ctx := testutils.Context(t)
-
-	var (
-		count = int64(1)
-	)
-	svc := setupTestService(t)
-
-	svc.orm.On("CountManagers", mock.Anything).
-		Return(count, nil)
-
-	actual, err := svc.CountManagers(ctx)
-	require.NoError(t, err)
-
-	assert.Equal(t, count, actual)
-}
-
 func Test_Service_CreateChainConfig(t *testing.T) {
-	var (
-		mgr         = feeds.FeedsManager{ID: 1}
-		nodeVersion = &versioning.NodeVersion{
-			Version: "1.0.0",
-		}
-		cfg = feeds.ChainConfig{
-			FeedsManagerID:          mgr.ID,
-			ChainID:                 "42",
-			ChainType:               feeds.ChainTypeEVM,
-			AccountAddress:          "0x0000000000000000000000000000000000000000",
-			AccountAddressPublicKey: null.StringFrom("0x0000000000000000000000000000000000000002"),
-			AdminAddress:            "0x0000000000000000000000000000000000000001",
-			FluxMonitorConfig: feeds.FluxMonitorConfig{
-				Enabled: true,
-			},
-			OCR1Config: feeds.OCR1Config{
-				Enabled: false,
-			},
-			OCR2Config: feeds.OCR2ConfigModel{
-				Enabled: false,
-			},
-		}
-
-		svc = setupTestService(t)
-	)
-
-	svc.orm.On("CreateChainConfig", mock.Anything, cfg).Return(int64(1), nil)
-	svc.orm.On("GetManager", mock.Anything, mgr.ID).Return(&mgr, nil)
-	svc.connMgr.On("GetClient", mgr.ID).Return(svc.fmsClient, nil)
-	svc.orm.On("ListChainConfigsByManagerIDs", mock.Anything, []int64{mgr.ID}).Return([]feeds.ChainConfig{cfg}, nil)
-	svc.fmsClient.On("UpdateNode", mock.Anything, &proto.UpdateNodeRequest{
-		Version: nodeVersion.Version,
-		ChainConfigs: []*proto.ChainConfig{
-			{
-				Chain: &proto.Chain{
-					Id:   cfg.ChainID,
-					Type: proto.ChainType_CHAIN_TYPE_EVM,
-				},
-				AccountAddress:          cfg.AccountAddress,
-				AccountAddressPublicKey: &cfg.AccountAddressPublicKey.String,
-				AdminAddress:            cfg.AdminAddress,
-				FluxMonitorConfig:       &proto.FluxMonitorConfig{Enabled: true},
-				Ocr1Config:              &proto.OCR1Config{Enabled: false},
-				Ocr2Config:              &proto.OCR2Config{Enabled: false},
-			},
+	tests := []struct {
+		name              string
+		chainType         feeds.ChainType
+		expectedID        int64
+		expectedChainType proto.ChainType
+	}{
+		{
+			name:              "EVM Chain Type",
+			chainType:         feeds.ChainTypeEVM,
+			expectedID:        int64(1),
+			expectedChainType: proto.ChainType_CHAIN_TYPE_EVM,
 		},
-	}).Return(&proto.UpdateNodeResponse{}, nil)
+		{
+			name:              "Solana Chain Type",
+			chainType:         feeds.ChainTypeSolana,
+			expectedID:        int64(1),
+			expectedChainType: proto.ChainType_CHAIN_TYPE_SOLANA,
+		},
+		{
+			name:              "Starknet Chain Type",
+			chainType:         feeds.ChainTypeStarknet,
+			expectedID:        int64(1),
+			expectedChainType: proto.ChainType_CHAIN_TYPE_STARKNET,
+		},
+		{
+			name:              "Aptos Chain Type",
+			chainType:         feeds.ChainTypeAptos,
+			expectedID:        int64(1),
+			expectedChainType: proto.ChainType_CHAIN_TYPE_APTOS,
+		},
+	}
 
-	actual, err := svc.CreateChainConfig(testutils.Context(t), cfg)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), actual)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				mgr         = feeds.FeedsManager{ID: 1}
+				nodeVersion = &versioning.NodeVersion{
+					Version: "1.0.0",
+				}
+				cfg = feeds.ChainConfig{
+					FeedsManagerID:          mgr.ID,
+					ChainID:                 "42",
+					ChainType:               tt.chainType,
+					AccountAddress:          "0x0000000000000000000000000000000000000000",
+					AccountAddressPublicKey: null.StringFrom("0x0000000000000000000000000000000000000002"),
+					AdminAddress:            "0x0000000000000000000000000000000000000001",
+					FluxMonitorConfig: feeds.FluxMonitorConfig{
+						Enabled: true,
+					},
+					OCR1Config: feeds.OCR1Config{
+						Enabled: false,
+					},
+					OCR2Config: feeds.OCR2ConfigModel{
+						Enabled: false,
+					},
+				}
+
+				svc = setupTestService(t)
+			)
+
+			svc.orm.On("CreateChainConfig", mock.Anything, cfg).Return(int64(1), nil)
+			svc.orm.On("GetManager", mock.Anything, mgr.ID).Return(&mgr, nil)
+			svc.connMgr.On("GetClient", mgr.ID).Return(svc.fmsClient, nil)
+			svc.orm.On("ListChainConfigsByManagerIDs", mock.Anything, []int64{mgr.ID}).Return([]feeds.ChainConfig{cfg}, nil)
+			svc.fmsClient.On("UpdateNode", mock.Anything, &proto.UpdateNodeRequest{
+				Version: nodeVersion.Version,
+				ChainConfigs: []*proto.ChainConfig{
+					{
+						Chain: &proto.Chain{
+							Id:   cfg.ChainID,
+							Type: tt.expectedChainType,
+						},
+						AccountAddress:          cfg.AccountAddress,
+						AccountAddressPublicKey: &cfg.AccountAddressPublicKey.String,
+						AdminAddress:            cfg.AdminAddress,
+						FluxMonitorConfig:       &proto.FluxMonitorConfig{Enabled: true},
+						Ocr1Config:              &proto.OCR1Config{Enabled: false},
+						Ocr2Config:              &proto.OCR2Config{Enabled: false},
+					},
+				},
+			}).Return(&proto.UpdateNodeResponse{}, nil)
+
+			actual, err := svc.CreateChainConfig(testutils.Context(t), cfg)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedID, actual)
+		})
+	}
 }
 
 func Test_Service_CreateChainConfig_InvalidAdminAddress(t *testing.T) {
@@ -485,51 +644,82 @@ func Test_Service_ListChainConfigsByManagerIDs(t *testing.T) {
 }
 
 func Test_Service_UpdateChainConfig(t *testing.T) {
-	var (
-		mgr         = feeds.FeedsManager{ID: 1}
-		nodeVersion = &versioning.NodeVersion{
-			Version: "1.0.0",
-		}
-		cfg = feeds.ChainConfig{
-			FeedsManagerID:          mgr.ID,
-			ChainID:                 "42",
-			ChainType:               feeds.ChainTypeEVM,
-			AccountAddress:          "0x0000000000000000000000000000000000000000",
-			AccountAddressPublicKey: null.StringFrom("0x0000000000000000000000000000000000000002"),
-			AdminAddress:            "0x0000000000000000000000000000000000000001",
-			FluxMonitorConfig:       feeds.FluxMonitorConfig{Enabled: false},
-			OCR1Config:              feeds.OCR1Config{Enabled: false},
-			OCR2Config:              feeds.OCR2ConfigModel{Enabled: false},
-		}
-
-		svc = setupTestService(t)
-	)
-
-	svc.orm.On("UpdateChainConfig", mock.Anything, cfg).Return(int64(1), nil)
-	svc.orm.On("GetChainConfig", mock.Anything, cfg.ID).Return(&cfg, nil)
-	svc.connMgr.On("GetClient", mgr.ID).Return(svc.fmsClient, nil)
-	svc.orm.On("ListChainConfigsByManagerIDs", mock.Anything, []int64{mgr.ID}).Return([]feeds.ChainConfig{cfg}, nil)
-	svc.fmsClient.On("UpdateNode", mock.Anything, &proto.UpdateNodeRequest{
-		Version: nodeVersion.Version,
-		ChainConfigs: []*proto.ChainConfig{
-			{
-				Chain: &proto.Chain{
-					Id:   cfg.ChainID,
-					Type: proto.ChainType_CHAIN_TYPE_EVM,
-				},
-				AccountAddress:          cfg.AccountAddress,
-				AdminAddress:            cfg.AdminAddress,
-				AccountAddressPublicKey: &cfg.AccountAddressPublicKey.String,
-				FluxMonitorConfig:       &proto.FluxMonitorConfig{Enabled: false},
-				Ocr1Config:              &proto.OCR1Config{Enabled: false},
-				Ocr2Config:              &proto.OCR2Config{Enabled: false},
-			},
+	tests := []struct {
+		name              string
+		chainType         feeds.ChainType
+		expectedChainType proto.ChainType
+	}{
+		{
+			name:              "EVM Chain Type",
+			chainType:         feeds.ChainTypeEVM,
+			expectedChainType: proto.ChainType_CHAIN_TYPE_EVM,
 		},
-	}).Return(&proto.UpdateNodeResponse{}, nil)
+		{
+			name:              "Solana Chain Type",
+			chainType:         feeds.ChainTypeSolana,
+			expectedChainType: proto.ChainType_CHAIN_TYPE_SOLANA,
+		},
+		{
+			name:              "Starknet Chain Type",
+			chainType:         feeds.ChainTypeStarknet,
+			expectedChainType: proto.ChainType_CHAIN_TYPE_STARKNET,
+		},
+		{
+			name:              "Aptos Chain Type",
+			chainType:         feeds.ChainTypeAptos,
+			expectedChainType: proto.ChainType_CHAIN_TYPE_APTOS,
+		},
+	}
 
-	actual, err := svc.UpdateChainConfig(testutils.Context(t), cfg)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), actual)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				mgr         = feeds.FeedsManager{ID: 1}
+				nodeVersion = &versioning.NodeVersion{
+					Version: "1.0.0",
+				}
+				cfg = feeds.ChainConfig{
+					FeedsManagerID:          mgr.ID,
+					ChainID:                 "42",
+					ChainType:               tt.chainType,
+					AccountAddress:          "0x0000000000000000000000000000000000000000",
+					AccountAddressPublicKey: null.StringFrom("0x0000000000000000000000000000000000000002"),
+					AdminAddress:            "0x0000000000000000000000000000000000000001",
+					FluxMonitorConfig:       feeds.FluxMonitorConfig{Enabled: false},
+					OCR1Config:              feeds.OCR1Config{Enabled: false},
+					OCR2Config:              feeds.OCR2ConfigModel{Enabled: false},
+				}
+
+				svc = setupTestService(t)
+			)
+
+			svc.orm.On("UpdateChainConfig", mock.Anything, cfg).Return(int64(1), nil)
+			svc.orm.On("GetChainConfig", mock.Anything, cfg.ID).Return(&cfg, nil)
+			svc.connMgr.On("GetClient", mgr.ID).Return(svc.fmsClient, nil)
+			svc.orm.On("ListChainConfigsByManagerIDs", mock.Anything, []int64{mgr.ID}).Return([]feeds.ChainConfig{cfg}, nil)
+			svc.fmsClient.On("UpdateNode", mock.Anything, &proto.UpdateNodeRequest{
+				Version: nodeVersion.Version,
+				ChainConfigs: []*proto.ChainConfig{
+					{
+						Chain: &proto.Chain{
+							Id:   cfg.ChainID,
+							Type: tt.expectedChainType,
+						},
+						AccountAddress:          cfg.AccountAddress,
+						AdminAddress:            cfg.AdminAddress,
+						AccountAddressPublicKey: &cfg.AccountAddressPublicKey.String,
+						FluxMonitorConfig:       &proto.FluxMonitorConfig{Enabled: false},
+						Ocr1Config:              &proto.OCR1Config{Enabled: false},
+						Ocr2Config:              &proto.OCR2Config{Enabled: false},
+					},
+				},
+			}).Return(&proto.UpdateNodeResponse{}, nil)
+
+			actual, err := svc.UpdateChainConfig(testutils.Context(t), cfg)
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), actual)
+		})
+	}
 }
 
 func Test_Service_UpdateChainConfig_InvalidAdminAddress(t *testing.T) {
@@ -1369,102 +1559,133 @@ answer1      [type=median index=0];
 }
 
 func Test_Service_SyncNodeInfo(t *testing.T) {
-	p2pKey := keystest.NewP2PKeyV2(t)
-
-	ocrKey, err := ocrkey.NewV2()
-	require.NoError(t, err)
-
-	var (
-		multiaddr     = "/dns4/chain.link/tcp/1234/p2p/16Uiu2HAm58SP7UL8zsnpeuwHfytLocaqgnyaYKP8wu7qRdrixLju"
-		mgr           = &feeds.FeedsManager{ID: 1}
-		forwarderAddr = "0x0002"
-		ccfg          = feeds.ChainConfig{
-			ID:             100,
-			FeedsManagerID: mgr.ID,
-			ChainID:        "42",
-			ChainType:      feeds.ChainTypeEVM,
-			AccountAddress: "0x0000",
-			AdminAddress:   "0x0001",
-			FluxMonitorConfig: feeds.FluxMonitorConfig{
-				Enabled: true,
-			},
-			OCR1Config: feeds.OCR1Config{
-				Enabled:     true,
-				IsBootstrap: false,
-				P2PPeerID:   null.StringFrom(p2pKey.PeerID().String()),
-				KeyBundleID: null.StringFrom(ocrKey.GetID()),
-			},
-			OCR2Config: feeds.OCR2ConfigModel{
-				Enabled:          true,
-				IsBootstrap:      true,
-				Multiaddr:        null.StringFrom(multiaddr),
-				ForwarderAddress: null.StringFrom(forwarderAddr),
-				Plugins: feeds.Plugins{
-					Commit:     true,
-					Execute:    true,
-					Median:     false,
-					Mercury:    true,
-					Rebalancer: true,
-				},
-			},
-		}
-		chainConfigs = []feeds.ChainConfig{ccfg}
-		nodeVersion  = &versioning.NodeVersion{Version: "1.0.0"}
-	)
-
-	svc := setupTestService(t)
-
-	svc.connMgr.On("GetClient", mgr.ID).Return(svc.fmsClient, nil)
-	svc.orm.On("ListChainConfigsByManagerIDs", mock.Anything, []int64{mgr.ID}).Return(chainConfigs, nil)
-
-	// OCR1 key fetching
-	svc.p2pKeystore.On("Get", p2pKey.PeerID()).Return(p2pKey, nil)
-	svc.ocr1Keystore.On("Get", ocrKey.GetID()).Return(ocrKey, nil)
-
-	svc.fmsClient.On("UpdateNode", mock.Anything, &proto.UpdateNodeRequest{
-		Version: nodeVersion.Version,
-		ChainConfigs: []*proto.ChainConfig{
-			{
-				Chain: &proto.Chain{
-					Id:   ccfg.ChainID,
-					Type: proto.ChainType_CHAIN_TYPE_EVM,
-				},
-				AccountAddress:    ccfg.AccountAddress,
-				AdminAddress:      ccfg.AdminAddress,
-				FluxMonitorConfig: &proto.FluxMonitorConfig{Enabled: true},
-				Ocr1Config: &proto.OCR1Config{
-					Enabled:     true,
-					IsBootstrap: ccfg.OCR1Config.IsBootstrap,
-					P2PKeyBundle: &proto.OCR1Config_P2PKeyBundle{
-						PeerId:    p2pKey.PeerID().String(),
-						PublicKey: p2pKey.PublicKeyHex(),
-					},
-					OcrKeyBundle: &proto.OCR1Config_OCRKeyBundle{
-						BundleId:              ocrKey.GetID(),
-						ConfigPublicKey:       ocrkey.ConfigPublicKey(ocrKey.PublicKeyConfig()).String(),
-						OffchainPublicKey:     ocrKey.OffChainSigning.PublicKey().String(),
-						OnchainSigningAddress: ocrKey.OnChainSigning.Address().String(),
-					},
-				},
-				Ocr2Config: &proto.OCR2Config{
-					Enabled:          true,
-					IsBootstrap:      ccfg.OCR2Config.IsBootstrap,
-					Multiaddr:        multiaddr,
-					ForwarderAddress: &forwarderAddr,
-					Plugins: &proto.OCR2Config_Plugins{
-						Commit:     ccfg.OCR2Config.Plugins.Commit,
-						Execute:    ccfg.OCR2Config.Plugins.Execute,
-						Median:     ccfg.OCR2Config.Plugins.Median,
-						Mercury:    ccfg.OCR2Config.Plugins.Mercury,
-						Rebalancer: ccfg.OCR2Config.Plugins.Rebalancer,
-					},
-				},
-			},
+	tests := []struct {
+		name      string
+		chainType feeds.ChainType
+		protoType proto.ChainType
+	}{
+		{
+			name:      "EVM Chain Type",
+			chainType: feeds.ChainTypeEVM,
+			protoType: proto.ChainType_CHAIN_TYPE_EVM,
 		},
-	}).Return(&proto.UpdateNodeResponse{}, nil)
+		{
+			name:      "Solana Chain Type",
+			chainType: feeds.ChainTypeSolana,
+			protoType: proto.ChainType_CHAIN_TYPE_SOLANA,
+		},
+		{
+			name:      "Starknet Chain Type",
+			chainType: feeds.ChainTypeStarknet,
+			protoType: proto.ChainType_CHAIN_TYPE_STARKNET,
+		},
+		{
+			name:      "Aptos Chain Type",
+			chainType: feeds.ChainTypeAptos,
+			protoType: proto.ChainType_CHAIN_TYPE_APTOS,
+		},
+	}
 
-	err = svc.SyncNodeInfo(testutils.Context(t), mgr.ID)
-	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p2pKey := keystest.NewP2PKeyV2(t)
+
+			ocrKey, err := ocrkey.NewV2()
+			require.NoError(t, err)
+
+			var (
+				multiaddr     = "/dns4/chain.link/tcp/1234/p2p/16Uiu2HAm58SP7UL8zsnpeuwHfytLocaqgnyaYKP8wu7qRdrixLju"
+				mgr           = &feeds.FeedsManager{ID: 1}
+				forwarderAddr = "0x0002"
+				ccfg          = feeds.ChainConfig{
+					ID:             100,
+					FeedsManagerID: mgr.ID,
+					ChainID:        "42",
+					ChainType:      tt.chainType,
+					AccountAddress: "0x0000",
+					AdminAddress:   "0x0001",
+					FluxMonitorConfig: feeds.FluxMonitorConfig{
+						Enabled: true,
+					},
+					OCR1Config: feeds.OCR1Config{
+						Enabled:     true,
+						IsBootstrap: false,
+						P2PPeerID:   null.StringFrom(p2pKey.PeerID().String()),
+						KeyBundleID: null.StringFrom(ocrKey.GetID()),
+					},
+					OCR2Config: feeds.OCR2ConfigModel{
+						Enabled:          true,
+						IsBootstrap:      true,
+						Multiaddr:        null.StringFrom(multiaddr),
+						ForwarderAddress: null.StringFrom(forwarderAddr),
+						Plugins: feeds.Plugins{
+							Commit:     true,
+							Execute:    true,
+							Median:     false,
+							Mercury:    true,
+							Rebalancer: true,
+						},
+					},
+				}
+				chainConfigs = []feeds.ChainConfig{ccfg}
+				nodeVersion  = &versioning.NodeVersion{Version: "1.0.0"}
+			)
+
+			svc := setupTestService(t)
+
+			svc.connMgr.On("GetClient", mgr.ID).Return(svc.fmsClient, nil)
+			svc.orm.On("ListChainConfigsByManagerIDs", mock.Anything, []int64{mgr.ID}).Return(chainConfigs, nil)
+
+			// OCR1 key fetching
+			svc.p2pKeystore.On("Get", p2pKey.PeerID()).Return(p2pKey, nil)
+			svc.ocr1Keystore.On("Get", ocrKey.GetID()).Return(ocrKey, nil)
+
+			svc.fmsClient.On("UpdateNode", mock.Anything, &proto.UpdateNodeRequest{
+				Version: nodeVersion.Version,
+				ChainConfigs: []*proto.ChainConfig{
+					{
+						Chain: &proto.Chain{
+							Id:   ccfg.ChainID,
+							Type: tt.protoType,
+						},
+						AccountAddress:    ccfg.AccountAddress,
+						AdminAddress:      ccfg.AdminAddress,
+						FluxMonitorConfig: &proto.FluxMonitorConfig{Enabled: true},
+						Ocr1Config: &proto.OCR1Config{
+							Enabled:     true,
+							IsBootstrap: ccfg.OCR1Config.IsBootstrap,
+							P2PKeyBundle: &proto.OCR1Config_P2PKeyBundle{
+								PeerId:    p2pKey.PeerID().String(),
+								PublicKey: p2pKey.PublicKeyHex(),
+							},
+							OcrKeyBundle: &proto.OCR1Config_OCRKeyBundle{
+								BundleId:              ocrKey.GetID(),
+								ConfigPublicKey:       ocrkey.ConfigPublicKey(ocrKey.PublicKeyConfig()).String(),
+								OffchainPublicKey:     ocrKey.OffChainSigning.PublicKey().String(),
+								OnchainSigningAddress: ocrKey.OnChainSigning.Address().String(),
+							},
+						},
+						Ocr2Config: &proto.OCR2Config{
+							Enabled:          true,
+							IsBootstrap:      ccfg.OCR2Config.IsBootstrap,
+							Multiaddr:        multiaddr,
+							ForwarderAddress: &forwarderAddr,
+							Plugins: &proto.OCR2Config_Plugins{
+								Commit:     ccfg.OCR2Config.Plugins.Commit,
+								Execute:    ccfg.OCR2Config.Plugins.Execute,
+								Median:     ccfg.OCR2Config.Plugins.Median,
+								Mercury:    ccfg.OCR2Config.Plugins.Mercury,
+								Rebalancer: ccfg.OCR2Config.Plugins.Rebalancer,
+							},
+						},
+					},
+				},
+			}).Return(&proto.UpdateNodeResponse{}, nil)
+
+			err = svc.SyncNodeInfo(testutils.Context(t), mgr.ID)
+			require.NoError(t, err)
+		})
+	}
 }
 
 func Test_Service_IsJobManaged(t *testing.T) {
@@ -1479,25 +1700,6 @@ func Test_Service_IsJobManaged(t *testing.T) {
 	isManaged, err := svc.IsJobManaged(ctx, jobID)
 	require.NoError(t, err)
 	assert.True(t, isManaged)
-}
-
-func Test_Service_ListJobProposals(t *testing.T) {
-	t.Parallel()
-	ctx := testutils.Context(t)
-
-	var (
-		jp  = feeds.JobProposal{}
-		jps = []feeds.JobProposal{jp}
-	)
-	svc := setupTestService(t)
-
-	svc.orm.On("ListJobProposals", mock.Anything).
-		Return(jps, nil)
-
-	actual, err := svc.ListJobProposals(ctx)
-	require.NoError(t, err)
-
-	assert.Equal(t, actual, jps)
 }
 
 func Test_Service_ListJobProposalsByManagersIDs(t *testing.T) {
@@ -3805,6 +4007,10 @@ func Test_Service_StartStop(t *testing.T) {
 			ID:  1,
 			URI: "localhost:2000",
 		}
+		mgr2 = feeds.FeedsManager{
+			ID:  2,
+			URI: "localhost:2001",
+		}
 		pubKeyHex = "0f17c3bf72de8beef6e2d17a14c0a972f5d7e0e66e70722373f12b88382d40f9"
 	)
 
@@ -3813,8 +4019,9 @@ func Test_Service_StartStop(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name       string
-		beforeFunc func(svc *TestService)
+		name                     string
+		enableMultiFeedsManagers bool
+		beforeFunc               func(svc *TestService)
 	}{
 		{
 			name: "success with a feeds manager connection",
@@ -3823,6 +4030,19 @@ func Test_Service_StartStop(t *testing.T) {
 				svc.orm.On("ListManagers", mock.Anything).Return([]feeds.FeedsManager{mgr}, nil)
 				svc.connMgr.On("IsConnected", mgr.ID).Return(false)
 				svc.connMgr.On("Connect", mock.IsType(feeds.ConnectOpts{}))
+				svc.connMgr.On("Close")
+				svc.orm.On("CountJobProposalsByStatus", mock.Anything).Return(&feeds.JobProposalCounts{}, nil)
+			},
+		},
+		{
+			name:                     "success with multiple feeds managers connection",
+			enableMultiFeedsManagers: true,
+			beforeFunc: func(svc *TestService) {
+				svc.csaKeystore.On("GetAll").Return([]csakey.KeyV2{key}, nil)
+				svc.orm.On("ListManagers", mock.Anything).Return([]feeds.FeedsManager{mgr, mgr2}, nil)
+				svc.connMgr.On("IsConnected", mgr.ID).Return(false)
+				svc.connMgr.On("IsConnected", mgr2.ID).Return(false)
+				svc.connMgr.On("Connect", mock.IsType(feeds.ConnectOpts{})).Twice()
 				svc.connMgr.On("Close")
 				svc.orm.On("CountJobProposalsByStatus", mock.Anything).Return(&feeds.JobProposalCounts{}, nil)
 			},
@@ -3843,7 +4063,9 @@ func Test_Service_StartStop(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			svc := setupTestService(t)
+			svc := setupTestServiceCfg(t, func(c *chainlink.Config, s *chainlink.Secrets) {
+				c.Feature.MultiFeedsManagers = &tt.enableMultiFeedsManagers
+			})
 
 			if tt.beforeFunc != nil {
 				tt.beforeFunc(svc)

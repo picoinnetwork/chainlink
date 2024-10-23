@@ -49,7 +49,6 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/logger"
 	"github.com/smartcontractkit/chainlink/v2/core/services/job"
 	"github.com/smartcontractkit/chainlink/v2/core/services/keystore"
-	"github.com/smartcontractkit/chainlink/v2/core/services/keystore/chaintype"
 	"github.com/smartcontractkit/chainlink/v2/core/services/keystore/keys/ocr2key"
 	"github.com/smartcontractkit/chainlink/v2/core/services/llo"
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocr2/plugins/ccip/ccipcommit"
@@ -121,8 +120,9 @@ type Delegate struct {
 	ks                    keystore.OCR2
 	ethKs                 keystore.Eth
 	RelayGetter
-	isNewlyCreatedJob bool // Set to true if this is a new job freshly added, false if job was present already on node boot.
-	mailMon           *mailbox.Monitor
+	isNewlyCreatedJob     bool // Set to true if this is a new job freshly added, false if job was present already on node boot.
+	mailMon               *mailbox.Monitor
+	retirementReportCache llo.RetirementReportCache
 
 	legacyChains         legacyevm.LegacyChainContainer // legacy: use relayers instead
 	capabilitiesRegistry core.CapabilitiesRegistry
@@ -215,42 +215,48 @@ func NewDelegateConfig(ocr2Cfg ocr2Config, m coreconfig.Mercury, t coreconfig.Th
 
 var _ job.Delegate = (*Delegate)(nil)
 
+type DelegateOpts struct {
+	Ds                    sqlutil.DataSource
+	JobORM                job.ORM
+	BridgeORM             bridges.ORM
+	MercuryORM            evmmercury.ORM
+	PipelineRunner        pipeline.Runner
+	StreamRegistry        streams.Getter
+	PeerWrapper           *ocrcommon.SingletonPeerWrapper
+	MonitoringEndpointGen telemetry.MonitoringEndpointGenerator
+	LegacyChains          legacyevm.LegacyChainContainer
+	Lggr                  logger.Logger
+	Ks                    keystore.OCR2
+	EthKs                 keystore.Eth
+	Relayers              RelayGetter
+	MailMon               *mailbox.Monitor
+	CapabilitiesRegistry  core.CapabilitiesRegistry
+	RetirementReportCache llo.RetirementReportCache
+}
+
 func NewDelegate(
-	ds sqlutil.DataSource,
-	jobORM job.ORM,
-	bridgeORM bridges.ORM,
-	mercuryORM evmmercury.ORM,
-	pipelineRunner pipeline.Runner,
-	streamRegistry streams.Getter,
-	peerWrapper *ocrcommon.SingletonPeerWrapper,
-	monitoringEndpointGen telemetry.MonitoringEndpointGenerator,
-	legacyChains legacyevm.LegacyChainContainer,
-	lggr logger.Logger,
+	opts DelegateOpts,
 	cfg DelegateConfig,
-	ks keystore.OCR2,
-	ethKs keystore.Eth,
-	relayers RelayGetter,
-	mailMon *mailbox.Monitor,
-	capabilitiesRegistry core.CapabilitiesRegistry,
 ) *Delegate {
 	return &Delegate{
-		ds:                    ds,
-		jobORM:                jobORM,
-		bridgeORM:             bridgeORM,
-		mercuryORM:            mercuryORM,
-		pipelineRunner:        pipelineRunner,
-		streamRegistry:        streamRegistry,
-		peerWrapper:           peerWrapper,
-		monitoringEndpointGen: monitoringEndpointGen,
-		legacyChains:          legacyChains,
+		ds:                    opts.Ds,
+		jobORM:                opts.JobORM,
+		bridgeORM:             opts.BridgeORM,
+		mercuryORM:            opts.MercuryORM,
+		pipelineRunner:        opts.PipelineRunner,
+		streamRegistry:        opts.StreamRegistry,
+		peerWrapper:           opts.PeerWrapper,
+		monitoringEndpointGen: opts.MonitoringEndpointGen,
+		legacyChains:          opts.LegacyChains,
 		cfg:                   cfg,
-		lggr:                  lggr.Named("OCR2"),
-		ks:                    ks,
-		ethKs:                 ethKs,
-		RelayGetter:           relayers,
+		lggr:                  opts.Lggr.Named("OCR2"),
+		ks:                    opts.Ks,
+		ethKs:                 opts.EthKs,
+		RelayGetter:           opts.Relayers,
 		isNewlyCreatedJob:     false,
-		mailMon:               mailMon,
-		capabilitiesRegistry:  capabilitiesRegistry,
+		mailMon:               opts.MailMon,
+		capabilitiesRegistry:  opts.CapabilitiesRegistry,
+		retirementReportCache: opts.RetirementReportCache,
 	}
 }
 
@@ -361,6 +367,18 @@ func (d *Delegate) cleanupEVM(ctx context.Context, jb job.Job, relayID types.Rel
 			d.lggr.Errorw("failed to unregister ccip exec plugin filters", "err", err2, "spec", spec)
 		}
 		return nil
+	case types.LLO:
+		var pluginCfg lloconfig.PluginConfig
+		err = json.Unmarshal(spec.PluginConfig.Bytes(), &pluginCfg)
+		if err != nil {
+			return err
+		}
+		var chainSelector uint64
+		chainSelector, err = chainselectors.SelectorFromChainId(chain.ID().Uint64())
+		if err != nil {
+			return err
+		}
+		return llo.Cleanup(ctx, lp, pluginCfg.ChannelDefinitionsContractAddress, pluginCfg.DonID, d.ds, chainSelector)
 	default:
 		return nil
 	}
@@ -451,10 +469,12 @@ func (d *Delegate) ServicesForSpec(ctx context.Context, jb job.Job) ([]job.Servi
 	}
 	lggr.Infow("OCR2 job using local config",
 		"BlockchainTimeout", lc.BlockchainTimeout,
+		"ContractConfigLoadTimeout", lc.ContractConfigLoadTimeout,
 		"ContractConfigConfirmations", lc.ContractConfigConfirmations,
 		"ContractConfigTrackerPollInterval", lc.ContractConfigTrackerPollInterval,
 		"ContractTransmitterTransmitTimeout", lc.ContractTransmitterTransmitTimeout,
 		"DatabaseTimeout", lc.DatabaseTimeout,
+		"DefaultMaxDurationInitialization", lc.DefaultMaxDurationInitialization,
 	)
 
 	bootstrapPeers, err := ocrcommon.GetValidatedBootstrapPeers(spec.P2PV2Bootstrappers, d.peerWrapper.P2PConfig().V2().DefaultBootstrappers())
@@ -621,7 +641,8 @@ func (d *Delegate) newServicesGenericPlugin(
 
 	provider, err := relayer.NewPluginProvider(ctx, types.RelayArgs{
 		ExternalJobID: jb.ExternalJobID,
-		JobID:         spec.ID,
+		JobID:         jb.ID,
+		OracleSpecID:  spec.ID,
 		ContractID:    spec.ContractID,
 		New:           d.isNewlyCreatedJob,
 		RelayConfig:   spec.RelayConfig.Bytes(),
@@ -772,7 +793,7 @@ func (d *Delegate) newServicesGenericPlugin(
 				}
 				keyBundles[name] = os
 			}
-			onchainKeyringAdapter, err = ocrcommon.NewOCR3OnchainKeyringMultiChainAdapter(keyBundles, kb.PublicKey(), lggr)
+			onchainKeyringAdapter, err = ocrcommon.NewOCR3OnchainKeyringMultiChainAdapter(keyBundles, lggr)
 			if err != nil {
 				return nil, err
 			}
@@ -871,6 +892,21 @@ func (d *Delegate) newServicesMercury(
 		lggr.ErrorIf(d.jobORM.RecordError(ctx, jb.ID, msg), "unable to record error")
 	})
 
+	var relayConfig evmrelaytypes.RelayConfig
+	err = json.Unmarshal(jb.OCR2OracleSpec.RelayConfig.Bytes(), &relayConfig)
+	if err != nil {
+		return nil, fmt.Errorf("error while unmarshalling relay config: %w", err)
+	}
+
+	var telemetryType synchronization.TelemetryType
+	if relayConfig.EnableTriggerCapability && len(jb.OCR2OracleSpec.PluginConfig) == 0 {
+		telemetryType = synchronization.OCR3DataFeeds
+		// First use case for TriggerCapability transmission is Data Feeds, so telemetry should be routed accordingly.
+		// This is only true if TriggerCapability is the *only* transmission method (PluginConfig is empty).
+	} else {
+		telemetryType = synchronization.OCR3Mercury
+	}
+
 	oracleArgsNoPlugin := libocr2.MercuryOracleArgs{
 		BinaryNetworkEndpointFactory: d.peerWrapper.Peer2,
 		V2Bootstrappers:              bootstrapPeers,
@@ -879,7 +915,7 @@ func (d *Delegate) newServicesMercury(
 		Database:                     ocrDB,
 		LocalConfig:                  lc,
 		Logger:                       ocrLogger,
-		MonitoringEndpoint:           d.monitoringEndpointGen.GenMonitoringEndpoint(rid.Network, rid.ChainID, spec.FeedID.String(), synchronization.OCR3Mercury),
+		MonitoringEndpoint:           d.monitoringEndpointGen.GenMonitoringEndpoint(rid.Network, rid.ChainID, spec.FeedID.String(), telemetryType),
 		OffchainConfigDigester:       mercuryProvider.OffchainConfigDigester(),
 		OffchainKeyring:              kb,
 		OnchainKeyring:               kb,
@@ -890,7 +926,7 @@ func (d *Delegate) newServicesMercury(
 
 	mCfg := mercury.NewMercuryConfig(d.cfg.JobPipeline().MaxSuccessfulRuns(), d.cfg.JobPipeline().ResultWriteQueueDepth(), d.cfg)
 
-	mercuryServices, err2 := mercury.NewServices(jb, mercuryProvider, d.pipelineRunner, lggr, oracleArgsNoPlugin, mCfg, chEnhancedTelem, d.mercuryORM, (mercuryutils.FeedID)(*spec.FeedID))
+	mercuryServices, err2 := mercury.NewServices(jb, mercuryProvider, d.pipelineRunner, lggr, oracleArgsNoPlugin, mCfg, chEnhancedTelem, d.mercuryORM, (mercuryutils.FeedID)(*spec.FeedID), relayConfig.EnableTriggerCapability)
 
 	if ocrcommon.ShouldCollectEnhancedTelemetryMercury(jb) {
 		enhancedTelemService := ocrcommon.NewEnhancedTelemetryService(&jb, chEnhancedTelem, make(chan struct{}), d.monitoringEndpointGen.GenMonitoringEndpoint(rid.Network, rid.ChainID, spec.FeedID.String(), synchronization.EnhancedEAMercury), lggr.Named("EnhancedTelemetryMercury"))
@@ -953,6 +989,7 @@ func (d *Delegate) newServicesLLO(
 		return nil, err
 	}
 
+	// Handle key bundle IDs explicitly specified in job spec
 	kbm := make(map[llotypes.ReportFormat]llo.Key)
 	for rfStr, kbid := range pluginCfg.KeyBundleIDs {
 		k, err3 := d.ks.Get(kbid)
@@ -965,26 +1002,23 @@ func (d *Delegate) newServicesLLO(
 		}
 		kbm[rf] = k
 	}
-	// NOTE: This is a bit messy because we assume chain type matches report
-	// format, and it may not in all cases. We don't yet know what report
-	// formats we need or how they correspond to chain types, so assume it's
-	// 1:1 for now but will change in future
-	//
+
+	// Use the default key bundle if not specified
+	// NOTE: Only JSON and EVMPremiumLegacy supported for now
 	// https://smartcontract-it.atlassian.net/browse/MERC-3722
-	for _, s := range chaintype.SupportedChainTypes {
-		rf, err3 := llotypes.ReportFormatFromString(string(s))
-		if err3 != nil {
-			return nil, fmt.Errorf("job %d (%s) has a chain type with no matching report format %s: %w", jb.ID, jb.Name.ValueOrZero(), s, err3)
-		}
+	//
+	// Also re-use EVM keys for signing the retirement report. This isn't
+	// required, just seems easiest since it's the only key type available for
+	// now.
+	for _, rf := range []llotypes.ReportFormat{llotypes.ReportFormatJSON, llotypes.ReportFormatEVMPremiumLegacy, llotypes.ReportFormatRetirement} {
 		if _, exists := kbm[rf]; !exists {
 			// Use the first if unspecified
-			kbs, err4 := d.ks.GetAllOfType(s)
-			if err4 != nil {
-				return nil, err4
+			kbs, err3 := d.ks.GetAllOfType("evm")
+			if err3 != nil {
+				return nil, err3
 			}
 			if len(kbs) == 0 {
-				// unsupported key type
-				continue
+				return nil, fmt.Errorf("no on-chain signing keys found for report format %s", "evm")
 			} else if len(kbs) > 1 {
 				lggr.Debugf("Multiple on-chain signing keys found for report format %s, using the first", rf.String())
 			}
@@ -1000,33 +1034,31 @@ func (d *Delegate) newServicesLLO(
 	lggr.Infof("Using on-chain signing keys for LLO job %d (%s): %v", jb.ID, jb.Name.ValueOrZero(), kbm)
 	kr := llo.NewOnchainKeyring(lggr, kbm)
 
-	ocrLogger := ocrcommon.NewOCRWrapper(lggr, d.cfg.OCR2().TraceLogging(), func(ctx context.Context, msg string) {
-		lggr.ErrorIf(d.jobORM.RecordError(ctx, jb.ID, msg), "unable to record error")
-	})
-
 	cfg := llo.DelegateConfig{
 		Logger:     lggr,
 		DataSource: d.ds,
 		Runner:     d.pipelineRunner,
 		Registry:   d.streamRegistry,
 
-		JobName: jb.Name,
+		JobName:            jb.Name,
+		CaptureEATelemetry: jb.OCR2OracleSpec.CaptureEATelemetry,
 
 		ChannelDefinitionCache: provider.ChannelDefinitionCache(),
+		RetirementReportCache:  d.retirementReportCache,
+		ShouldRetireCache:      provider.ShouldRetireCache(),
+		RetirementReportCodec:  datastreamsllo.StandardRetirementReportCodec{},
 
+		TraceLogging:                 d.cfg.OCR2().TraceLogging(),
 		BinaryNetworkEndpointFactory: d.peerWrapper.Peer2,
 		V2Bootstrappers:              bootstrapPeers,
 		ContractTransmitter:          provider.ContractTransmitter(),
-		ContractConfigTracker:        provider.ContractConfigTracker(),
+		ContractConfigTrackers:       provider.ContractConfigTrackers(),
 		Database:                     ocrDB,
 		LocalConfig:                  lc,
-		// TODO: Telemetry for llo
-		// https://smartcontract-it.atlassian.net/browse/MERC-3603
-		MonitoringEndpoint:     nil,
-		OffchainConfigDigester: provider.OffchainConfigDigester(),
-		OffchainKeyring:        kb,
-		OnchainKeyring:         kr,
-		OCRLogger:              ocrLogger,
+		MonitoringEndpoint:           d.monitoringEndpointGen.GenMonitoringEndpoint(rid.Network, rid.ChainID, fmt.Sprintf("%d", pluginCfg.DonID), synchronization.EnhancedEAMercury),
+		OffchainConfigDigester:       provider.OffchainConfigDigester(),
+		OffchainKeyring:              kb,
+		OnchainKeyring:               kr,
 
 		// Enable verbose logging if either Mercury.VerboseLogging is on or OCR2.TraceLogging is on
 		ReportingPluginConfig: datastreamsllo.Config{VerboseLogging: d.cfg.Mercury().VerboseLogging() || d.cfg.OCR2().TraceLogging()},
@@ -1035,7 +1067,7 @@ func (d *Delegate) newServicesLLO(
 	if err != nil {
 		return nil, err
 	}
-	return []job.ServiceCtx{provider, ocrLogger, oracle}, nil
+	return []job.ServiceCtx{provider, oracle}, nil
 }
 
 func (d *Delegate) newServicesMedian(

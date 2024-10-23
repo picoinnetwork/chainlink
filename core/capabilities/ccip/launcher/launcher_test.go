@@ -1,7 +1,6 @@
 package launcher
 
 import (
-	"errors"
 	"math/big"
 	"reflect"
 	"testing"
@@ -15,137 +14,10 @@ import (
 
 	ccipreaderpkg "github.com/smartcontractkit/chainlink-ccip/pkg/reader"
 
-	"github.com/smartcontractkit/chainlink/v2/core/internal/testutils"
 	"github.com/smartcontractkit/chainlink/v2/core/logger"
 	"github.com/smartcontractkit/chainlink/v2/core/services/keystore/keys/p2pkey"
 	"github.com/smartcontractkit/chainlink/v2/core/services/registrysyncer"
 )
-
-func Test_createOracle(t *testing.T) {
-	var p2pKeys []ragep2ptypes.PeerID
-	for i := 0; i < 3; i++ {
-		p2pKeys = append(p2pKeys, ragep2ptypes.PeerID(p2pkey.MustNewV2XXXTestingOnly(big.NewInt(int64(i+1))).PeerID()))
-	}
-	myP2PKey := p2pKeys[0]
-	type args struct {
-		p2pID         ragep2ptypes.PeerID
-		oracleCreator *mocks.OracleCreator
-		pluginType    cctypes.PluginType
-		ocrConfigs    []ccipreaderpkg.OCR3ConfigWithMeta
-	}
-	tests := []struct {
-		name    string
-		args    args
-		expect  func(t *testing.T, args args, oracleCreator *mocks.OracleCreator)
-		wantErr bool
-	}{
-		{
-			"success, no bootstrap",
-			args{
-				myP2PKey,
-				mocks.NewOracleCreator(t),
-				cctypes.PluginTypeCCIPCommit,
-				[]ccipreaderpkg.OCR3ConfigWithMeta{
-					{
-						Config:       ccipreaderpkg.OCR3Config{},
-						ConfigCount:  1,
-						ConfigDigest: testutils.Random32Byte(),
-					},
-				},
-			},
-			func(t *testing.T, args args, oracleCreator *mocks.OracleCreator) {
-				oracleCreator.
-					On("CreatePluginOracle", cctypes.PluginTypeCCIPCommit, cctypes.OCR3ConfigWithMeta(args.ocrConfigs[0])).
-					Return(mocks.NewCCIPOracle(t), nil)
-			},
-			false,
-		},
-		{
-			"success, with bootstrap",
-			args{
-				myP2PKey,
-				mocks.NewOracleCreator(t),
-				cctypes.PluginTypeCCIPCommit,
-				[]ccipreaderpkg.OCR3ConfigWithMeta{
-					{
-						Config: ccipreaderpkg.OCR3Config{
-							BootstrapP2PIds: [][32]byte{myP2PKey},
-						},
-						ConfigCount:  1,
-						ConfigDigest: testutils.Random32Byte(),
-					},
-				},
-			},
-			func(t *testing.T, args args, oracleCreator *mocks.OracleCreator) {
-				oracleCreator.
-					On("CreatePluginOracle", cctypes.PluginTypeCCIPCommit, cctypes.OCR3ConfigWithMeta(args.ocrConfigs[0])).
-					Return(mocks.NewCCIPOracle(t), nil)
-				oracleCreator.
-					On("CreateBootstrapOracle", cctypes.OCR3ConfigWithMeta(args.ocrConfigs[0])).
-					Return(mocks.NewCCIPOracle(t), nil)
-			},
-			false,
-		},
-		{
-			"error creating plugin oracle",
-			args{
-				myP2PKey,
-				mocks.NewOracleCreator(t),
-				cctypes.PluginTypeCCIPCommit,
-				[]ccipreaderpkg.OCR3ConfigWithMeta{
-					{
-						Config:       ccipreaderpkg.OCR3Config{},
-						ConfigCount:  1,
-						ConfigDigest: testutils.Random32Byte(),
-					},
-				},
-			},
-			func(t *testing.T, args args, oracleCreator *mocks.OracleCreator) {
-				oracleCreator.
-					On("CreatePluginOracle", cctypes.PluginTypeCCIPCommit, cctypes.OCR3ConfigWithMeta(args.ocrConfigs[0])).
-					Return(nil, errors.New("error creating oracle"))
-			},
-			true,
-		},
-		{
-			"error creating bootstrap oracle",
-			args{
-				myP2PKey,
-				mocks.NewOracleCreator(t),
-				cctypes.PluginTypeCCIPCommit,
-				[]ccipreaderpkg.OCR3ConfigWithMeta{
-					{
-						Config: ccipreaderpkg.OCR3Config{
-							BootstrapP2PIds: [][32]byte{myP2PKey},
-						},
-						ConfigCount:  1,
-						ConfigDigest: testutils.Random32Byte(),
-					},
-				},
-			},
-			func(t *testing.T, args args, oracleCreator *mocks.OracleCreator) {
-				oracleCreator.
-					On("CreatePluginOracle", cctypes.PluginTypeCCIPCommit, cctypes.OCR3ConfigWithMeta(args.ocrConfigs[0])).
-					Return(mocks.NewCCIPOracle(t), nil)
-				oracleCreator.
-					On("CreateBootstrapOracle", cctypes.OCR3ConfigWithMeta(args.ocrConfigs[0])).
-					Return(nil, errors.New("error creating oracle"))
-			},
-			true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.expect(t, tt.args, tt.args.oracleCreator)
-			_, _, err := createOracle(tt.args.p2pID, tt.args.oracleCreator, tt.args.pluginType, tt.args.ocrConfigs)
-			if tt.wantErr {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-		})
-	}
-}
 
 func Test_createDON(t *testing.T) {
 	type args struct {
@@ -162,23 +34,74 @@ func Test_createDON(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			"not a member of the DON",
+			"not a member of the DON and not a bootstrap node",
 			args{
 				logger.TestLogger(t),
 				p2pID1,
 				mocks.NewHomeChainReader(t),
 				mocks.NewOracleCreator(t),
 				registrysyncer.DON{
-					DON:                      getDON(2, []ragep2ptypes.PeerID{p2pID2}, 0),
+					DON:                      getDON(2, []ragep2ptypes.PeerID{p2pID3, p2pID4}, 0),
 					CapabilityConfigurations: defaultCapCfgs,
 				},
 			},
 			func(t *testing.T, args args, oracleCreator *mocks.OracleCreator, homeChainReader *mocks.HomeChainReader) {
+				homeChainReader.
+					On("GetOCRConfigs", mock.Anything, uint32(2), uint8(cctypes.PluginTypeCCIPCommit)).
+					Return([]ccipreaderpkg.OCR3ConfigWithMeta{{
+						Config: ccipreaderpkg.OCR3Config{
+							PluginType: uint8(cctypes.PluginTypeCCIPCommit),
+							Nodes:      getOCR3Nodes(3, 4),
+						},
+					}}, nil)
+				homeChainReader.
+					On("GetOCRConfigs", mock.Anything, uint32(2), uint8(cctypes.PluginTypeCCIPExec)).
+					Return([]ccipreaderpkg.OCR3ConfigWithMeta{{
+						Config: ccipreaderpkg.OCR3Config{
+							PluginType: uint8(cctypes.PluginTypeCCIPExec),
+							Nodes:      getOCR3Nodes(3, 4),
+						},
+					}}, nil)
+				oracleCreator.EXPECT().Type().Return(cctypes.OracleTypePlugin).Once()
 			},
 			false,
 		},
 		{
-			"success, no bootstrap",
+			"not a member of the DON but a running a bootstrap oracle creator",
+			args{
+				logger.TestLogger(t),
+				ragep2ptypes.PeerID(p2pkey.MustNewV2XXXTestingOnly(big.NewInt(1)).PeerID()),
+				mocks.NewHomeChainReader(t),
+				mocks.NewOracleCreator(t),
+				registrysyncer.DON{
+					DON:                      getDON(2, []ragep2ptypes.PeerID{p2pID3, p2pID4}, 0),
+					CapabilityConfigurations: defaultCapCfgs,
+				},
+			},
+			func(t *testing.T, args args, oracleCreator *mocks.OracleCreator, homeChainReader *mocks.HomeChainReader) {
+				homeChainReader.
+					On("GetOCRConfigs", mock.Anything, uint32(2), uint8(cctypes.PluginTypeCCIPCommit)).
+					Return([]ccipreaderpkg.OCR3ConfigWithMeta{{
+						Config: ccipreaderpkg.OCR3Config{
+							PluginType: uint8(cctypes.PluginTypeCCIPCommit),
+							Nodes:      getOCR3Nodes(3, 4),
+						},
+					}}, nil)
+				homeChainReader.
+					On("GetOCRConfigs", mock.Anything, uint32(2), uint8(cctypes.PluginTypeCCIPExec)).
+					Return([]ccipreaderpkg.OCR3ConfigWithMeta{{
+						Config: ccipreaderpkg.OCR3Config{
+							PluginType: uint8(cctypes.PluginTypeCCIPExec),
+							Nodes:      getOCR3Nodes(3, 4),
+						},
+					}}, nil)
+				oracleCreator.EXPECT().Type().Return(cctypes.OracleTypeBootstrap).Once()
+				oracleCreator.EXPECT().Create(mock.Anything, mock.Anything).Return(mocks.NewCCIPOracle(t), nil).Twice()
+			},
+			false,
+		},
+		{
+			"success",
 			args{
 				logger.TestLogger(t),
 				p2pID1,
@@ -189,15 +112,28 @@ func Test_createDON(t *testing.T) {
 			func(t *testing.T, args args, oracleCreator *mocks.OracleCreator, homeChainReader *mocks.HomeChainReader) {
 				homeChainReader.
 					On("GetOCRConfigs", mock.Anything, uint32(1), uint8(cctypes.PluginTypeCCIPCommit)).
-					Return([]ccipreaderpkg.OCR3ConfigWithMeta{{}}, nil)
+					Return([]ccipreaderpkg.OCR3ConfigWithMeta{{
+						Config: ccipreaderpkg.OCR3Config{
+							PluginType: uint8(cctypes.PluginTypeCCIPCommit),
+							Nodes:      getOCR3Nodes(3, 4),
+						},
+					}}, nil)
 				homeChainReader.
 					On("GetOCRConfigs", mock.Anything, uint32(1), uint8(cctypes.PluginTypeCCIPExec)).
-					Return([]ccipreaderpkg.OCR3ConfigWithMeta{{}}, nil)
-				oracleCreator.
-					On("CreatePluginOracle", cctypes.PluginTypeCCIPCommit, mock.Anything).
+					Return([]ccipreaderpkg.OCR3ConfigWithMeta{{
+						Config: ccipreaderpkg.OCR3Config{
+							PluginType: uint8(cctypes.PluginTypeCCIPExec),
+							Nodes:      getOCR3Nodes(3, 4),
+						},
+					}}, nil)
+
+				oracleCreator.EXPECT().Create(mock.Anything, mock.MatchedBy(func(cfg cctypes.OCR3ConfigWithMeta) bool {
+					return cfg.Config.PluginType == uint8(cctypes.PluginTypeCCIPCommit)
+				})).
 					Return(mocks.NewCCIPOracle(t), nil)
-				oracleCreator.
-					On("CreatePluginOracle", cctypes.PluginTypeCCIPExec, mock.Anything).
+				oracleCreator.EXPECT().Create(mock.Anything, mock.MatchedBy(func(cfg cctypes.OCR3ConfigWithMeta) bool {
+					return cfg.Config.PluginType == uint8(cctypes.PluginTypeCCIPExec)
+				})).
 					Return(mocks.NewCCIPOracle(t), nil)
 			},
 			false,
@@ -208,7 +144,8 @@ func Test_createDON(t *testing.T) {
 			if tt.expect != nil {
 				tt.expect(t, tt.args, tt.args.oracleCreator, tt.args.homeChainReader)
 			}
-			_, err := createDON(tt.args.lggr, tt.args.p2pID, tt.args.homeChainReader, tt.args.oracleCreator, tt.args.don)
+
+			_, err := createDON(tt.args.lggr, tt.args.p2pID, tt.args.homeChainReader, tt.args.don, tt.args.oracleCreator)
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {
@@ -220,6 +157,7 @@ func Test_createDON(t *testing.T) {
 
 func Test_createFutureBlueGreenDeployment(t *testing.T) {
 	type args struct {
+		donID          uint32
 		prevDeployment ccipDeployment
 		ocrConfigs     []ccipreaderpkg.OCR3ConfigWithMeta
 		oracleCreator  *mocks.OracleCreator
@@ -228,20 +166,20 @@ func Test_createFutureBlueGreenDeployment(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    args
-		want    blueGreenDeployment
+		want    activeCandidateDeployment
 		wantErr bool
 	}{
 		// TODO: Add test cases.
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := createFutureBlueGreenDeployment(tt.args.prevDeployment, tt.args.ocrConfigs, tt.args.oracleCreator, tt.args.pluginType)
+			got, err := createFutureActiveCandidateDeployment(tt.args.donID, tt.args.prevDeployment, tt.args.ocrConfigs, tt.args.oracleCreator, tt.args.pluginType)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("createFutureBlueGreenDeployment() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("createFutureActiveCandidateDeployment() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("createFutureBlueGreenDeployment() = %v, want %v", got, tt.want)
+				t.Errorf("createFutureActiveCandidateDeployment() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -266,7 +204,7 @@ func Test_updateDON(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotFutDeployment, err := updateDON(tt.args.lggr, tt.args.p2pID, tt.args.homeChainReader, tt.args.oracleCreator, tt.args.prevDeployment, tt.args.don)
+			gotFutDeployment, err := updateDON(tt.args.lggr, tt.args.p2pID, tt.args.homeChainReader, tt.args.prevDeployment, tt.args.don, tt.args.oracleCreator)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("updateDON() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -302,15 +240,15 @@ func Test_launcher_processDiff(t *testing.T) {
 			fields{
 				dons: map[registrysyncer.DonID]*ccipDeployment{
 					1: {
-						commit: blueGreenDeployment{
-							blue: newMock(t,
+						commit: activeCandidateDeployment{
+							active: newMock(t,
 								func(t *testing.T) *mocks.CCIPOracle { return mocks.NewCCIPOracle(t) },
 								func(m *mocks.CCIPOracle) {
 									m.On("Close").Return(nil)
 								}),
 						},
-						exec: blueGreenDeployment{
-							blue: newMock(t,
+						exec: activeCandidateDeployment{
+							active: newMock(t,
 								func(t *testing.T) *mocks.CCIPOracle { return mocks.NewCCIPOracle(t) },
 								func(m *mocks.CCIPOracle) {
 									m.On("Close").Return(nil)
@@ -346,9 +284,17 @@ func Test_launcher_processDiff(t *testing.T) {
 					return mocks.NewHomeChainReader(t)
 				}, func(m *mocks.HomeChainReader) {
 					m.On("GetOCRConfigs", mock.Anything, uint32(1), uint8(cctypes.PluginTypeCCIPCommit)).
-						Return([]ccipreaderpkg.OCR3ConfigWithMeta{{}}, nil)
+						Return([]ccipreaderpkg.OCR3ConfigWithMeta{{
+							Config: ccipreaderpkg.OCR3Config{
+								PluginType: uint8(cctypes.PluginTypeCCIPCommit),
+							},
+						}}, nil)
 					m.On("GetOCRConfigs", mock.Anything, uint32(1), uint8(cctypes.PluginTypeCCIPExec)).
-						Return([]ccipreaderpkg.OCR3ConfigWithMeta{{}}, nil)
+						Return([]ccipreaderpkg.OCR3ConfigWithMeta{{
+							Config: ccipreaderpkg.OCR3Config{
+								PluginType: uint8(cctypes.PluginTypeCCIPExec),
+							},
+						}}, nil)
 				}),
 				oracleCreator: newMock(t, func(t *testing.T) *mocks.OracleCreator {
 					return mocks.NewOracleCreator(t)
@@ -357,9 +303,13 @@ func Test_launcher_processDiff(t *testing.T) {
 					commitOracle.On("Start").Return(nil)
 					execOracle := mocks.NewCCIPOracle(t)
 					execOracle.On("Start").Return(nil)
-					m.On("CreatePluginOracle", cctypes.PluginTypeCCIPCommit, mock.Anything).
+					m.EXPECT().Create(mock.Anything, mock.MatchedBy(func(cfg cctypes.OCR3ConfigWithMeta) bool {
+						return cfg.Config.PluginType == uint8(cctypes.PluginTypeCCIPCommit)
+					})).
 						Return(commitOracle, nil)
-					m.On("CreatePluginOracle", cctypes.PluginTypeCCIPExec, mock.Anything).
+					m.EXPECT().Create(mock.Anything, mock.MatchedBy(func(cfg cctypes.OCR3ConfigWithMeta) bool {
+						return cfg.Config.PluginType == uint8(cctypes.PluginTypeCCIPExec)
+					})).
 						Return(execOracle, nil)
 				}),
 				dons: map[registrysyncer.DonID]*ccipDeployment{},
@@ -381,7 +331,7 @@ func Test_launcher_processDiff(t *testing.T) {
 			false,
 		},
 		{
-			"don updated new green instance success",
+			"don updated new candidate instance success",
 			fields{
 				lggr:  logger.TestLogger(t),
 				p2pID: p2pID1,
@@ -389,9 +339,25 @@ func Test_launcher_processDiff(t *testing.T) {
 					return mocks.NewHomeChainReader(t)
 				}, func(m *mocks.HomeChainReader) {
 					m.On("GetOCRConfigs", mock.Anything, uint32(1), uint8(cctypes.PluginTypeCCIPCommit)).
-						Return([]ccipreaderpkg.OCR3ConfigWithMeta{{}, {}}, nil)
+						Return([]ccipreaderpkg.OCR3ConfigWithMeta{{
+							Config: ccipreaderpkg.OCR3Config{
+								PluginType: uint8(cctypes.PluginTypeCCIPCommit),
+							},
+						}, {
+							Config: ccipreaderpkg.OCR3Config{
+								PluginType: uint8(cctypes.PluginTypeCCIPCommit),
+							},
+						}}, nil)
 					m.On("GetOCRConfigs", mock.Anything, uint32(1), uint8(cctypes.PluginTypeCCIPExec)).
-						Return([]ccipreaderpkg.OCR3ConfigWithMeta{{}, {}}, nil)
+						Return([]ccipreaderpkg.OCR3ConfigWithMeta{{
+							Config: ccipreaderpkg.OCR3Config{
+								PluginType: uint8(cctypes.PluginTypeCCIPExec),
+							},
+						}, {
+							Config: ccipreaderpkg.OCR3Config{
+								PluginType: uint8(cctypes.PluginTypeCCIPExec),
+							},
+						}}, nil)
 				}),
 				oracleCreator: newMock(t, func(t *testing.T) *mocks.OracleCreator {
 					return mocks.NewOracleCreator(t)
@@ -400,20 +366,24 @@ func Test_launcher_processDiff(t *testing.T) {
 					commitOracle.On("Start").Return(nil)
 					execOracle := mocks.NewCCIPOracle(t)
 					execOracle.On("Start").Return(nil)
-					m.On("CreatePluginOracle", cctypes.PluginTypeCCIPCommit, mock.Anything).
+					m.EXPECT().Create(mock.Anything, mock.MatchedBy(func(cfg cctypes.OCR3ConfigWithMeta) bool {
+						return cfg.Config.PluginType == uint8(cctypes.PluginTypeCCIPCommit)
+					})).
 						Return(commitOracle, nil)
-					m.On("CreatePluginOracle", cctypes.PluginTypeCCIPExec, mock.Anything).
+					m.EXPECT().Create(mock.Anything, mock.MatchedBy(func(cfg cctypes.OCR3ConfigWithMeta) bool {
+						return cfg.Config.PluginType == uint8(cctypes.PluginTypeCCIPExec)
+					})).
 						Return(execOracle, nil)
 				}),
 				dons: map[registrysyncer.DonID]*ccipDeployment{
 					1: {
-						commit: blueGreenDeployment{
-							blue: newMock(t, func(t *testing.T) *mocks.CCIPOracle {
+						commit: activeCandidateDeployment{
+							active: newMock(t, func(t *testing.T) *mocks.CCIPOracle {
 								return mocks.NewCCIPOracle(t)
 							}, func(m *mocks.CCIPOracle) {}),
 						},
-						exec: blueGreenDeployment{
-							blue: newMock(t, func(t *testing.T) *mocks.CCIPOracle {
+						exec: activeCandidateDeployment{
+							active: newMock(t, func(t *testing.T) *mocks.CCIPOracle {
 								return mocks.NewCCIPOracle(t)
 							}, func(m *mocks.CCIPOracle) {}),
 						},
@@ -465,6 +435,13 @@ func Test_launcher_processDiff(t *testing.T) {
 	}
 }
 
+func getOCR3Nodes(p2pIDs ...int64) []ccipreaderpkg.OCR3Node {
+	nodes := make([]ccipreaderpkg.OCR3Node, len(p2pIDs))
+	for i, p2pID := range p2pIDs {
+		nodes[i] = ccipreaderpkg.OCR3Node{P2pID: p2pkey.MustNewV2XXXTestingOnly(big.NewInt(p2pID)).PeerID()}
+	}
+	return nodes
+}
 func newMock[T any](t *testing.T, newer func(t *testing.T) T, expect func(m T)) T {
 	o := newer(t)
 	expect(o)

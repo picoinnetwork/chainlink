@@ -156,6 +156,10 @@ func (c *SimulatedBackendClient) LINKBalance(ctx context.Context, address common
 	panic("not implemented")
 }
 
+func (c *SimulatedBackendClient) FeeHistory(ctx context.Context, blockCount uint64, rewardPercentiles []float64) (feeHistory *ethereum.FeeHistory, err error) {
+	panic("not implemented")
+}
+
 // TransactionReceipt returns the transaction receipt for the given transaction hash.
 func (c *SimulatedBackendClient) TransactionReceipt(ctx context.Context, receipt common.Hash) (*types.Receipt, error) {
 	return c.b.TransactionReceipt(ctx, receipt)
@@ -267,9 +271,8 @@ func (c *SimulatedBackendClient) PendingNonceAt(ctx context.Context, account com
 }
 
 // NonceAt gets nonce as of a specified block.
-func (c *SimulatedBackendClient) SequenceAt(ctx context.Context, account common.Address, blockNumber *big.Int) (evmtypes.Nonce, error) {
-	nonce, err := c.b.NonceAt(ctx, account, blockNumber)
-	return evmtypes.Nonce(nonce), err
+func (c *SimulatedBackendClient) NonceAt(ctx context.Context, account common.Address, blockNumber *big.Int) (uint64, error) {
+	return c.b.NonceAt(ctx, account, blockNumber)
 }
 
 // BalanceAt gets balance as of a specified block.
@@ -293,20 +296,20 @@ func (h *headSubscription) Unsubscribe() {
 // Err returns err channel
 func (h *headSubscription) Err() <-chan error { return h.subscription.Err() }
 
-// SubscribeNewHead registers a subscription for push notifications of new blocks.
+// SubscribeToHeads registers a subscription for push notifications of new blocks.
 // Note the sim's API only accepts types.Head so we have this goroutine
 // to convert those into evmtypes.Head.
-func (c *SimulatedBackendClient) SubscribeNewHead(
+func (c *SimulatedBackendClient) SubscribeToHeads(
 	ctx context.Context,
-	channel chan<- *evmtypes.Head,
-) (ethereum.Subscription, error) {
+) (<-chan *evmtypes.Head, ethereum.Subscription, error) {
 	subscription := &headSubscription{unSub: make(chan chan struct{})}
 	ch := make(chan *types.Header)
+	channel := make(chan *evmtypes.Head)
 
 	var err error
 	subscription.subscription, err = c.b.SubscribeNewHead(ctx, ch)
 	if err != nil {
-		return nil, fmt.Errorf("%w: could not subscribe to new heads on "+
+		return nil, nil, fmt.Errorf("%w: could not subscribe to new heads on "+
 			"simulated backend", err)
 	}
 	go func() {
@@ -316,7 +319,15 @@ func (c *SimulatedBackendClient) SubscribeNewHead(
 			case h := <-ch:
 				var head *evmtypes.Head
 				if h != nil {
-					head = &evmtypes.Head{Difficulty: h.Difficulty, Timestamp: time.Unix(int64(h.Time), 0), Number: h.Number.Int64(), Hash: h.Hash(), ParentHash: h.ParentHash, Parent: lastHead, EVMChainID: ubig.New(c.chainId)}
+					head = &evmtypes.Head{
+						Difficulty: h.Difficulty,
+						Timestamp:  time.Unix(int64(h.Time), 0), //nolint:gosec
+						Number:     h.Number.Int64(),
+						Hash:       h.Hash(),
+						ParentHash: h.ParentHash,
+						EVMChainID: ubig.New(c.chainId),
+					}
+					head.Parent.Store(lastHead)
 					lastHead = head
 				}
 				select {
@@ -334,7 +345,7 @@ func (c *SimulatedBackendClient) SubscribeNewHead(
 			}
 		}
 	}()
-	return subscription, err
+	return channel, subscription, err
 }
 
 // HeaderByNumber returns the geth header type.
@@ -415,7 +426,7 @@ func (c *SimulatedBackendClient) CallContract(ctx context.Context, msg ethereum.
 	res, err := c.b.CallContract(ctx, msg, blockNumber)
 	if err != nil {
 		dataErr := revertError{}
-		if errors.Is(err, &dataErr) {
+		if errors.As(err, &dataErr) {
 			return nil, &JsonError{Data: dataErr.ErrorData(), Message: dataErr.Error(), Code: 3}
 		}
 		// Generic revert, no data
@@ -434,7 +445,7 @@ func (c *SimulatedBackendClient) PendingCallContract(ctx context.Context, msg et
 	res, err := c.b.PendingCallContract(ctx, msg)
 	if err != nil {
 		dataErr := revertError{}
-		if errors.Is(err, &dataErr) {
+		if errors.As(err, &dataErr) {
 			return nil, &JsonError{Data: dataErr.ErrorData(), Message: dataErr.Error(), Code: 3}
 		}
 		// Generic revert, no data

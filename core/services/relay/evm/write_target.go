@@ -7,14 +7,15 @@ import (
 
 	chainselectors "github.com/smartcontractkit/chain-selectors"
 
+	"github.com/smartcontractkit/chainlink-common/pkg/logger"
+
 	"github.com/smartcontractkit/chainlink/v2/core/capabilities/targets"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/legacyevm"
 	"github.com/smartcontractkit/chainlink/v2/core/gethwrappers/keystone/generated/forwarder"
-	"github.com/smartcontractkit/chainlink/v2/core/logger"
 	relayevmtypes "github.com/smartcontractkit/chainlink/v2/core/services/relay/evm/types"
 )
 
-func NewWriteTarget(ctx context.Context, relayer *Relayer, chain legacyevm.Chain, lggr logger.Logger) (*targets.WriteTarget, error) {
+func NewWriteTarget(ctx context.Context, relayer *Relayer, chain legacyevm.Chain, gasLimitDefault uint64, lggr logger.Logger) (*targets.WriteTarget, error) {
 	// generate ID based on chain selector
 	id := fmt.Sprintf("write_%v@1.0.0", chain.ID())
 	chainName, err := chainselectors.NameFromChainId(chain.ID().Uint64())
@@ -41,12 +42,11 @@ func NewWriteTarget(ctx context.Context, relayer *Relayer, chain legacyevm.Chain
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal contract reader config %v", err)
 	}
-	cr, err := relayer.NewContractReader(contractReaderConfigEncoded)
+	cr, err := relayer.NewContractReader(ctx, contractReaderConfigEncoded)
 	if err != nil {
 		return nil, err
 	}
 
-	var gasLimit uint64 = 400_000
 	chainWriterConfig := relayevmtypes.ChainWriterConfig{
 		Contracts: map[string]*relayevmtypes.ContractConfig{
 			"forwarder": {
@@ -54,9 +54,8 @@ func NewWriteTarget(ctx context.Context, relayer *Relayer, chain legacyevm.Chain
 				Configs: map[string]*relayevmtypes.ChainWriterDefinition{
 					"report": {
 						ChainSpecificName: "report",
-						Checker:           "simulate",
 						FromAddress:       config.FromAddress().Address(),
-						GasLimit:          gasLimit,
+						GasLimit:          gasLimitDefault,
 					},
 				},
 			},
@@ -74,5 +73,5 @@ func NewWriteTarget(ctx context.Context, relayer *Relayer, chain legacyevm.Chain
 		return nil, err
 	}
 
-	return targets.NewWriteTarget(lggr.Named("WriteTarget"), id, cr, cw, config.ForwarderAddress().String(), gasLimit), nil
+	return targets.NewWriteTarget(logger.Named(lggr, "WriteTarget"), id, cr, cw, config.ForwarderAddress().String(), gasLimitDefault), nil
 }

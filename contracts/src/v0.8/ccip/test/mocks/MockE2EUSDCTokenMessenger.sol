@@ -21,6 +21,7 @@ import {IMessageTransmitterWithRelay} from "./interfaces/IMessageTransmitterWith
 
 // This contract mocks both the ITokenMessenger and IMessageTransmitter
 // contracts involved with the Cross Chain Token Protocol.
+// solhint-disable
 contract MockE2EUSDCTokenMessenger is ITokenMessenger {
   uint32 private immutable i_messageBodyVersion;
   address private immutable i_transmitter;
@@ -50,8 +51,13 @@ contract MockE2EUSDCTokenMessenger is ITokenMessenger {
     IBurnMintERC20(burnToken).transferFrom(msg.sender, address(this), amount);
     IBurnMintERC20(burnToken).burn(amount);
     // Format message body
-    bytes memory _burnMessage =
-      abi.encodePacked(i_messageBodyVersion, burnToken, mintRecipient, amount, bytes32(uint256(uint160((msg.sender)))));
+    bytes memory _burnMessage = _formatMessage(
+      i_messageBodyVersion,
+      bytes32(uint256(uint160(burnToken))),
+      mintRecipient,
+      amount,
+      bytes32(uint256(uint160(msg.sender)))
+    );
     s_nonce =
       _sendDepositForBurnMessage(destinationDomain, DESTINATION_TOKEN_MESSENGER, destinationCaller, _burnMessage);
     emit DepositForBurn(
@@ -99,5 +105,24 @@ contract MockE2EUSDCTokenMessenger is ITokenMessenger {
         _destinationDomain, _destinationTokenMessenger, _destinationCaller, _burnMessage
       );
     }
+  }
+
+  /**
+   * @notice Formats Burn message
+   * @param _version The message body version
+   * @param _burnToken The burn token address on source domain as bytes32
+   * @param _mintRecipient The mint recipient address as bytes32
+   * @param _amount The burn amount
+   * @param _messageSender The message sender
+   * @return Burn formatted message.
+   */
+  function _formatMessage(
+    uint32 _version,
+    bytes32 _burnToken,
+    bytes32 _mintRecipient,
+    uint256 _amount,
+    bytes32 _messageSender
+  ) internal pure returns (bytes memory) {
+    return abi.encodePacked(_version, _burnToken, _mintRecipient, _amount, _messageSender);
   }
 }

@@ -23,7 +23,6 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/services/job"
 	"github.com/smartcontractkit/chainlink/v2/core/services/ocr"
 	"github.com/smartcontractkit/chainlink/v2/core/services/pipeline"
-	evmrelay "github.com/smartcontractkit/chainlink/v2/core/services/relay/evm"
 	"github.com/smartcontractkit/chainlink/v2/core/testdata/testspecs"
 	"github.com/smartcontractkit/chainlink/v2/core/utils/crypto"
 )
@@ -53,7 +52,7 @@ func setupORM(t *testing.T) *TestORM {
 
 // Managers
 
-func Test_ORM_CreateManager(t *testing.T) {
+func Test_ORM_CreateManager_CountManagers(t *testing.T) {
 	t.Parallel()
 	ctx := testutils.Context(t)
 
@@ -76,6 +75,33 @@ func Test_ORM_CreateManager(t *testing.T) {
 	count, err = orm.CountManagers(ctx)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), count)
+
+	assert.NotZero(t, id)
+}
+
+func Test_ORM_CreateManager(t *testing.T) {
+	t.Parallel()
+	ctx := testutils.Context(t)
+
+	var (
+		orm = setupORM(t)
+		mgr = &feeds.FeedsManager{
+			URI:       uri,
+			Name:      name,
+			PublicKey: publicKey,
+		}
+	)
+
+	exists, err := orm.ManagerExists(ctx, publicKey)
+	require.NoError(t, err)
+	require.Equal(t, false, exists)
+
+	id, err := orm.CreateManager(ctx, mgr)
+	require.NoError(t, err)
+
+	exists, err = orm.ManagerExists(ctx, publicKey)
+	require.NoError(t, err)
+	require.Equal(t, true, exists)
 
 	assert.NotZero(t, id)
 }
@@ -553,39 +579,6 @@ func Test_ORM_GetJobProposal(t *testing.T) {
 		_, err = orm.GetJobProposalByRemoteUUID(ctx, uuid.New())
 		require.Error(t, err)
 	})
-}
-
-func Test_ORM_ListJobProposals(t *testing.T) {
-	t.Parallel()
-	ctx := testutils.Context(t)
-
-	orm := setupORM(t)
-	fmID := createFeedsManager(t, orm)
-	uuid := uuid.New()
-	name := null.StringFrom("jp1")
-
-	jp := &feeds.JobProposal{
-		Name:           name,
-		RemoteUUID:     uuid,
-		Status:         feeds.JobProposalStatusPending,
-		FeedsManagerID: fmID,
-	}
-
-	id, err := orm.CreateJobProposal(ctx, jp)
-	require.NoError(t, err)
-
-	jps, err := orm.ListJobProposals(ctx)
-	require.NoError(t, err)
-	require.Len(t, jps, 1)
-
-	actual := jps[0]
-	assert.Equal(t, id, actual.ID)
-	assert.Equal(t, name, actual.Name)
-	assert.Equal(t, uuid, actual.RemoteUUID)
-	assert.Equal(t, jp.Status, actual.Status)
-	assert.False(t, actual.ExternalJobID.Valid)
-	assert.False(t, actual.PendingUpdate)
-	assert.Equal(t, jp.FeedsManagerID, actual.FeedsManagerID)
 }
 
 func Test_ORM_CountJobProposalsByStatus(t *testing.T) {
@@ -1659,6 +1652,14 @@ func Test_ORM_IsJobManaged(t *testing.T) {
 	isManaged, err = orm.IsJobManaged(ctx, int64(j.ID))
 	require.NoError(t, err)
 	assert.True(t, isManaged)
+
+	// delete the proposal
+	err = orm.DeleteProposal(ctx, jpID)
+	require.NoError(t, err)
+
+	isManaged, err = orm.IsJobManaged(ctx, int64(j.ID))
+	require.NoError(t, err)
+	assert.False(t, isManaged)
 }
 
 // Helpers
@@ -1698,12 +1699,12 @@ func createJob(t *testing.T, db *sqlx.DB, externalJobID uuid.UUID) *job.Job {
 	ctx := testutils.Context(t)
 
 	var (
-		config         = configtest.NewGeneralConfig(t, nil)
-		keyStore       = cltest.NewKeyStore(t, db)
-		lggr           = logger.TestLogger(t)
-		pipelineORM    = pipeline.NewORM(db, lggr, config.JobPipeline().MaxSuccessfulRuns())
-		bridgeORM      = bridges.NewORM(db)
-		relayExtenders = evmtest.NewChainRelayExtenders(t, evmtest.TestChainOpts{DB: db, GeneralConfig: config, KeyStore: keyStore.Eth()})
+		config       = configtest.NewGeneralConfig(t, nil)
+		keyStore     = cltest.NewKeyStore(t, db)
+		lggr         = logger.TestLogger(t)
+		pipelineORM  = pipeline.NewORM(db, lggr, config.JobPipeline().MaxSuccessfulRuns())
+		bridgeORM    = bridges.NewORM(db)
+		legacyChains = evmtest.NewLegacyChains(t, evmtest.TestChainOpts{DB: db, GeneralConfig: config, KeyStore: keyStore.Eth()})
 	)
 	orm := job.NewORM(db, pipelineORM, bridgeORM, keyStore, lggr)
 	require.NoError(t, keyStore.OCR().Add(ctx, cltest.DefaultOCRKey))
@@ -1715,7 +1716,6 @@ func createJob(t *testing.T, db *sqlx.DB, externalJobID uuid.UUID) *job.Job {
 	_, bridge2 := cltest.MustCreateBridge(t, db, cltest.BridgeOpts{})
 
 	_, address := cltest.MustInsertRandomKey(t, keyStore.Eth())
-	legacyChains := evmrelay.NewLegacyChainsFromRelayerExtenders(relayExtenders)
 	jb, err := ocr.ValidatedOracleSpecToml(config, legacyChains,
 		testspecs.GenerateOCRSpec(testspecs.OCRSpecParams{
 			JobID:              externalJobID.String(),

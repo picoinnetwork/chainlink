@@ -543,6 +543,63 @@ func (_c *ORM_FindJobIDByAddress_Call) RunAndReturn(run func(context.Context, ty
 	return _c
 }
 
+// FindJobIDByCapabilityNameAndVersion provides a mock function with given fields: ctx, spec
+func (_m *ORM) FindJobIDByCapabilityNameAndVersion(ctx context.Context, spec job.CCIPSpec) (int32, error) {
+	ret := _m.Called(ctx, spec)
+
+	if len(ret) == 0 {
+		panic("no return value specified for FindJobIDByCapabilityNameAndVersion")
+	}
+
+	var r0 int32
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, job.CCIPSpec) (int32, error)); ok {
+		return rf(ctx, spec)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, job.CCIPSpec) int32); ok {
+		r0 = rf(ctx, spec)
+	} else {
+		r0 = ret.Get(0).(int32)
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, job.CCIPSpec) error); ok {
+		r1 = rf(ctx, spec)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// ORM_FindJobIDByCapabilityNameAndVersion_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'FindJobIDByCapabilityNameAndVersion'
+type ORM_FindJobIDByCapabilityNameAndVersion_Call struct {
+	*mock.Call
+}
+
+// FindJobIDByCapabilityNameAndVersion is a helper method to define mock.On call
+//   - ctx context.Context
+//   - spec job.CCIPSpec
+func (_e *ORM_Expecter) FindJobIDByCapabilityNameAndVersion(ctx interface{}, spec interface{}) *ORM_FindJobIDByCapabilityNameAndVersion_Call {
+	return &ORM_FindJobIDByCapabilityNameAndVersion_Call{Call: _e.mock.On("FindJobIDByCapabilityNameAndVersion", ctx, spec)}
+}
+
+func (_c *ORM_FindJobIDByCapabilityNameAndVersion_Call) Run(run func(ctx context.Context, spec job.CCIPSpec)) *ORM_FindJobIDByCapabilityNameAndVersion_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(job.CCIPSpec))
+	})
+	return _c
+}
+
+func (_c *ORM_FindJobIDByCapabilityNameAndVersion_Call) Return(_a0 int32, _a1 error) *ORM_FindJobIDByCapabilityNameAndVersion_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *ORM_FindJobIDByCapabilityNameAndVersion_Call) RunAndReturn(run func(context.Context, job.CCIPSpec) (int32, error)) *ORM_FindJobIDByCapabilityNameAndVersion_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // FindJobIDByWorkflow provides a mock function with given fields: ctx, spec
 func (_m *ORM) FindJobIDByWorkflow(ctx context.Context, spec job.WorkflowSpec) (int32, error) {
 	ret := _m.Called(ctx, spec)
@@ -655,63 +712,6 @@ func (_c *ORM_FindJobIDsWithBridge_Call) Return(_a0 []int32, _a1 error) *ORM_Fin
 }
 
 func (_c *ORM_FindJobIDsWithBridge_Call) RunAndReturn(run func(context.Context, string) ([]int32, error)) *ORM_FindJobIDsWithBridge_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-// FindJobTx provides a mock function with given fields: ctx, id
-func (_m *ORM) FindJobTx(ctx context.Context, id int32) (job.Job, error) {
-	ret := _m.Called(ctx, id)
-
-	if len(ret) == 0 {
-		panic("no return value specified for FindJobTx")
-	}
-
-	var r0 job.Job
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, int32) (job.Job, error)); ok {
-		return rf(ctx, id)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, int32) job.Job); ok {
-		r0 = rf(ctx, id)
-	} else {
-		r0 = ret.Get(0).(job.Job)
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, int32) error); ok {
-		r1 = rf(ctx, id)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// ORM_FindJobTx_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'FindJobTx'
-type ORM_FindJobTx_Call struct {
-	*mock.Call
-}
-
-// FindJobTx is a helper method to define mock.On call
-//   - ctx context.Context
-//   - id int32
-func (_e *ORM_Expecter) FindJobTx(ctx interface{}, id interface{}) *ORM_FindJobTx_Call {
-	return &ORM_FindJobTx_Call{Call: _e.mock.On("FindJobTx", ctx, id)}
-}
-
-func (_c *ORM_FindJobTx_Call) Run(run func(ctx context.Context, id int32)) *ORM_FindJobTx_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(int32))
-	})
-	return _c
-}
-
-func (_c *ORM_FindJobTx_Call) Return(_a0 job.Job, _a1 error) *ORM_FindJobTx_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *ORM_FindJobTx_Call) RunAndReturn(run func(context.Context, int32) (job.Job, error)) *ORM_FindJobTx_Call {
 	_c.Call.Return(run)
 	return _c
 }

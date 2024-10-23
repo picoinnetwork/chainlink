@@ -14,6 +14,7 @@ const (
 	ChainGnosis          ChainType = "gnosis"
 	ChainHedera          ChainType = "hedera"
 	ChainKroma           ChainType = "kroma"
+	ChainMantle          ChainType = "mantle"
 	ChainMetis           ChainType = "metis"
 	ChainOptimismBedrock ChainType = "optimismBedrock"
 	ChainScroll          ChainType = "scroll"
@@ -21,6 +22,7 @@ const (
 	ChainXLayer          ChainType = "xlayer"
 	ChainZkEvm           ChainType = "zkevm"
 	ChainZkSync          ChainType = "zksync"
+	ChainZircuit         ChainType = "zircuit"
 )
 
 // IsL2 returns true if this chain is a Layer 2 chain. Notably:
@@ -37,13 +39,13 @@ func (c ChainType) IsL2() bool {
 
 func (c ChainType) IsValid() bool {
 	switch c {
-	case "", ChainArbitrum, ChainAstar, ChainCelo, ChainGnosis, ChainHedera, ChainKroma, ChainMetis, ChainOptimismBedrock, ChainScroll, ChainWeMix, ChainXLayer, ChainZkEvm, ChainZkSync:
+	case "", ChainArbitrum, ChainAstar, ChainCelo, ChainGnosis, ChainHedera, ChainKroma, ChainMantle, ChainMetis, ChainOptimismBedrock, ChainScroll, ChainWeMix, ChainXLayer, ChainZkEvm, ChainZkSync, ChainZircuit:
 		return true
 	}
 	return false
 }
 
-func ChainTypeFromSlug(slug string) ChainType {
+func FromSlug(slug string) ChainType {
 	switch slug {
 	case "arbitrum":
 		return ChainArbitrum
@@ -57,6 +59,8 @@ func ChainTypeFromSlug(slug string) ChainType {
 		return ChainHedera
 	case "kroma":
 		return ChainKroma
+	case "mantle":
+		return ChainMantle
 	case "metis":
 		return ChainMetis
 	case "optimismBedrock":
@@ -71,64 +75,67 @@ func ChainTypeFromSlug(slug string) ChainType {
 		return ChainZkEvm
 	case "zksync":
 		return ChainZkSync
+	case "zircuit":
+		return ChainZircuit
 	default:
 		return ChainType(slug)
 	}
 }
 
-type ChainTypeConfig struct {
+type Config struct {
 	value ChainType
 	slug  string
 }
 
-func NewChainTypeConfig(slug string) *ChainTypeConfig {
-	return &ChainTypeConfig{
-		value: ChainTypeFromSlug(slug),
+func NewConfig(slug string) *Config {
+	return &Config{
+		value: FromSlug(slug),
 		slug:  slug,
 	}
 }
 
-func (c *ChainTypeConfig) MarshalText() ([]byte, error) {
+func (c *Config) MarshalText() ([]byte, error) {
 	if c == nil {
 		return nil, nil
 	}
 	return []byte(c.slug), nil
 }
 
-func (c *ChainTypeConfig) UnmarshalText(b []byte) error {
+func (c *Config) UnmarshalText(b []byte) error {
 	c.slug = string(b)
-	c.value = ChainTypeFromSlug(c.slug)
+	c.value = FromSlug(c.slug)
 	return nil
 }
 
-func (c *ChainTypeConfig) Slug() string {
+func (c *Config) Slug() string {
 	if c == nil {
 		return ""
 	}
 	return c.slug
 }
 
-func (c *ChainTypeConfig) ChainType() ChainType {
+func (c *Config) ChainType() ChainType {
 	if c == nil {
 		return ""
 	}
 	return c.value
 }
 
-func (c *ChainTypeConfig) String() string {
+func (c *Config) String() string {
 	if c == nil {
 		return ""
 	}
 	return string(c.value)
 }
 
-var ErrInvalidChainType = fmt.Errorf("must be one of %s or omitted", strings.Join([]string{
+var ErrInvalid = fmt.Errorf("must be one of %s or omitted", strings.Join([]string{
 	string(ChainArbitrum),
 	string(ChainAstar),
 	string(ChainCelo),
 	string(ChainGnosis),
 	string(ChainHedera),
 	string(ChainKroma),
+	string(ChainMantle),
 	string(ChainMetis),
 	string(ChainOptimismBedrock),
 	string(ChainScroll),
@@ -136,4 +143,5 @@ var ErrInvalidChainType = fmt.Errorf("must be one of %s or omitted", strings.Joi
 	string(ChainXLayer),
 	string(ChainZkEvm),
 	string(ChainZkSync),
+	string(ChainZircuit),
 }, ", "))

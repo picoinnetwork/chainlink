@@ -97,6 +97,8 @@ RPCBlockQueryDelay = 1 # Default
 # Block 64 will be treated as finalized by CL Node only when chain's latest finalized block is 65. As chain finalizes blocks in batches of 32,
 # CL Node has to wait for a whole new batch to be finalized to treat block 64 as finalized.
 FinalizedBlockOffset = 0 # Default
+# LogBroadcasterEnabled is a feature flag for LogBroadcaster, by default it's true.
+LogBroadcasterEnabled = true # Default
 # NoNewFinalizedHeadsThreshold controls how long to wait for new finalized block before `NodePool` marks rpc endpoints as
 # out-of-sync. Only applicable if `FinalityTagEnabled=true`
 #
@@ -193,6 +195,8 @@ LimitMax = 500_000 # Default
 LimitMultiplier = '1.0' # Default
 # LimitTransfer is the gas limit used for an ordinary ETH transfer.
 LimitTransfer = 21_000 # Default
+# EstimateLimit enables estimating gas limits for transactions. This feature respects the gas limit provided during transaction creation as an upper bound.
+EstimateLimit = false # Default
 # BumpMin is the minimum fixed amount of wei by which gas is bumped on each transaction attempt.
 BumpMin = '5 gwei' # Default
 # BumpPercent is the percentage by which to bump gas on a transaction that has exceeded `BumpThreshold`. The larger of `BumpPercent` and `BumpMin` is taken for gas bumps.
@@ -259,6 +263,14 @@ TipCapDefault = '1 wei' # Default
 # (Only applies to EIP-1559 transactions)
 TipCapMin = '1 wei' # Default
 
+[EVM.GasEstimator.DAOracle]
+# OracleType refers to the oracle family this config belongs to. Currently the available oracle types are: 'opstack', 'arbitrum', 'zksync', and 'custom_calldata'.
+OracleType = 'opstack' # Example
+# OracleAddress is the address of the oracle contract.
+OracleAddress = '0x420000000000000000000000000000000000000F' # Example
+# CustomGasPriceCalldata is optional and can be set to call a custom gas price function at the given OracleAddress.
+CustomGasPriceCalldata = '' # Default
+
 [EVM.GasEstimator.LimitJobType]
 # OCR overrides LimitDefault for OCR jobs.
 OCR = 100_000 # Example
@@ -309,6 +321,15 @@ EIP1559FeeCapBufferBlocks = 13 # Example
 # Setting it lower will tend to set lower gas prices.
 TransactionPercentile = 60 # Default
 
+[EVM.GasEstimator.FeeHistory]
+# CacheTimeout is the time to wait in order to refresh the cached values stored in the FeeHistory estimator. A small jitter is applied so the timeout won't be exactly the same each time.
+#
+# You want this value to be close to the block time. For slower chains, like Ethereum, you can set it to 12s, the same as the block time. For faster chains you can skip a block or two
+# and set it to two times the block time i.e. on Optimism you can set it to 4s. Ideally, you don't want to go lower than 1s since the RTT times of the RPC requests will be comparable to
+# the timeout. The estimator is already adding a buffer to account for a potential increase in prices within one or two blocks. On the other hand, slower frequency will fail to refresh
+# the prices and end up in stale values.
+CacheTimeout = '10s' # Default
+
 # The head tracker continually listens for new heads from the chain.
 #
 # In addition to these settings, it log warnings if `EVM.NoNewHeadsThreshold` is exceeded without any new blocks being emitted.
@@ -334,6 +355,11 @@ FinalityTagBypass = true # Default
 # If actual finality depth exceeds this number, HeadTracker aborts backfill and returns an error.
 # Has no effect if `FinalityTagsEnabled` = false
 MaxAllowedFinalityDepth = 10000 # Default
+# PersistenceEnabled defines whether HeadTracker needs to store heads in the database.
+# Persistence is helpful on chains with large finality depth, where fetching blocks from the latest to the latest finalized takes a lot of time.
+# On chains with fast finality, the persistence layer does not improve the chain's load time and only consumes database resources (mainly IO).
+# NOTE: persistence should not be disabled for products that use LogBroadcaster, as it might lead to missed on-chain events.
+PersistenceEnabled = true # Default
 
 [[EVM.KeySpecific]]
 # Key is the account to apply these settings to
@@ -396,6 +422,10 @@ EnforceRepeatableRead = false # Default
 # trigger declaration of `FinalizedBlockOutOfSync` due to insignificant network delays in broadcasting of the finalized state among RPCs.
 # RPC will not be picked to handle a request even if this option is set to a nonzero value.
 DeathDeclarationDelay = '10s' # Default
+# NewHeadsPollInterval define an interval for polling new block periodically using http client rather than subscribe to ws feed
+#
+# Set to 0 to disable.
+NewHeadsPollInterval = '0s' # Default
 # **ADVANCED**
 # Errors enable the node to provide custom regex patterns to match against error messages from RPCs.
 [EVM.NodePool.Errors]
@@ -427,6 +457,8 @@ TransactionAlreadyMined = '(: |^)transaction already mined' # Example
 Fatal = '(: |^)fatal' # Example
 # ServiceUnavailable is a regex pattern to match against service unavailable errors.
 ServiceUnavailable = '(: |^)service unavailable' # Example
+# TooManyResults is a regex pattern to match an eth_getLogs error indicating the result set is too large to return
+TooManyResults = '(: |^)too many results' # Example
 
 [EVM.OCR]
 # ContractConfirmations sets `OCR.ContractConfirmations` for this EVM chain.
@@ -449,7 +481,7 @@ ObservationGracePeriod = '1s' # Default
 [[EVM.Nodes]]
 # Name is a unique (per-chain) identifier for this node.
 Name = 'foo' # Example
-# WSURL is the WS(S) endpoint for this node. Required for primary nodes.
+# WSURL is the WS(S) endpoint for this node. Required for primary nodes when `LogBroadcasterEnabled` is `true`
 WSURL = 'wss://web.socket/test' # Example
 # HTTPURL is the HTTP(S) endpoint for this node. Required for all nodes.
 HTTPURL = 'https://foo.web' # Example
@@ -467,3 +499,5 @@ GasLimit = 5400000 # Default
 FromAddress = '0x2a3e23c6f242F5345320814aC8a1b4E58707D292' # Example
 # ForwarderAddress is the keystone forwarder contract address on chain.
 ForwarderAddress = '0x2a3e23c6f242F5345320814aC8a1b4E58707D292' # Example
+# GasLimitDefault is the default gas limit for workflow transactions.
+GasLimitDefault = 400_000 # Default

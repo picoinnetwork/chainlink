@@ -16,11 +16,11 @@ import (
 	"gopkg.in/guregu/null.v4"
 
 	commonconfig "github.com/smartcontractkit/chainlink-common/pkg/config"
+
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/txmgr"
 	ubig "github.com/smartcontractkit/chainlink/v2/core/chains/evm/utils/big"
 	"github.com/smartcontractkit/chainlink/v2/core/gethwrappers/generated/solidity_vrf_coordinator_interface"
 	"github.com/smartcontractkit/chainlink/v2/core/internal/cltest"
-	"github.com/smartcontractkit/chainlink/v2/core/internal/cltest/heavyweight"
 	"github.com/smartcontractkit/chainlink/v2/core/internal/testutils"
 	"github.com/smartcontractkit/chainlink/v2/core/services/chainlink"
 	"github.com/smartcontractkit/chainlink/v2/core/services/job"
@@ -30,6 +30,7 @@ import (
 	"github.com/smartcontractkit/chainlink/v2/core/services/vrf/vrfcommon"
 	"github.com/smartcontractkit/chainlink/v2/core/services/vrf/vrftesthelpers"
 	"github.com/smartcontractkit/chainlink/v2/core/testdata/testspecs"
+	"github.com/smartcontractkit/chainlink/v2/core/utils/testutils/heavyweight"
 )
 
 func TestIntegration_VRF_JPV2(t *testing.T) {
@@ -75,7 +76,7 @@ func TestIntegration_VRF_JPV2(t *testing.T) {
 				cu.Backend.Commit()
 			}
 			var runs []pipeline.Run
-			gomega.NewWithT(t).Eventually(func() bool {
+			require.Eventually(t, func() bool {
 				runs, err = app.PipelineORM().GetAllRuns(ctx)
 				require.NoError(t, err)
 				// It possible that we send the test request
@@ -84,7 +85,7 @@ func TestIntegration_VRF_JPV2(t *testing.T) {
 				// keep blocks coming in for the lb to send the backfilled logs.
 				cu.Backend.Commit()
 				return len(runs) == 2 && runs[0].State == pipeline.RunStatusCompleted && runs[1].State == pipeline.RunStatusCompleted
-			}, testutils.WaitTimeout(t), 1*time.Second).Should(gomega.BeTrue())
+			}, testutils.WaitTimeout(t), 1*time.Second)
 			assert.Equal(t, pipeline.RunErrors([]null.String{{}}), runs[0].FatalErrors)
 			assert.Equal(t, 4, len(runs[0].PipelineTaskRuns))
 			assert.Equal(t, 4, len(runs[1].PipelineTaskRuns))
@@ -96,16 +97,16 @@ func TestIntegration_VRF_JPV2(t *testing.T) {
 			require.NoError(t, app.JobSpawner().DeleteJob(ctx, nil, jb.ID))
 
 			// Ensure the eth transaction gets confirmed on chain.
-			gomega.NewWithT(t).Eventually(func() bool {
+			require.Eventually(t, func() bool {
 				orm := txmgr.NewTxStore(app.GetDB(), app.GetLogger())
 				uc, err2 := orm.CountUnconfirmedTransactions(ctx, key1.Address, testutils.SimulatedChainID)
 				require.NoError(t, err2)
 				return uc == 0
-			}, testutils.WaitTimeout(t), 100*time.Millisecond).Should(gomega.BeTrue())
+			}, testutils.WaitTimeout(t), 100*time.Millisecond)
 
 			// Assert the request was fulfilled on-chain.
 			var rf []*solidity_vrf_coordinator_interface.VRFCoordinatorRandomnessRequestFulfilled
-			gomega.NewWithT(t).Eventually(func() bool {
+			require.Eventually(t, func() bool {
 				rfIterator, err2 := cu.RootContract.FilterRandomnessRequestFulfilled(nil)
 				require.NoError(t, err2, "failed to subscribe to RandomnessRequest logs")
 				rf = nil
@@ -113,7 +114,7 @@ func TestIntegration_VRF_JPV2(t *testing.T) {
 					rf = append(rf, rfIterator.Event)
 				}
 				return len(rf) == 2
-			}, testutils.WaitTimeout(t), 500*time.Millisecond).Should(gomega.BeTrue())
+			}, testutils.WaitTimeout(t), 500*time.Millisecond)
 
 			// Check that each sending address sent one transaction
 			n1, err := cu.Backend.PendingNonceAt(ctx, key1.Address)
@@ -197,12 +198,12 @@ func TestIntegration_VRF_WithBHS(t *testing.T) {
 	require.NoError(t, app.JobSpawner().CreateJob(ctx, nil, &jb))
 
 	var runs []pipeline.Run
-	gomega.NewWithT(t).Eventually(func() bool {
+	require.Eventually(t, func() bool {
 		runs, err = app.PipelineORM().GetAllRuns(ctx)
 		require.NoError(t, err)
 		cu.Backend.Commit()
 		return len(runs) == 1 && runs[0].State == pipeline.RunStatusCompleted
-	}, 10*time.Second, 1*time.Second).Should(gomega.BeTrue())
+	}, 10*time.Second, 1*time.Second)
 	assert.Equal(t, pipeline.RunErrors([]null.String{{}}), runs[0].FatalErrors)
 	assert.Equal(t, 4, len(runs[0].PipelineTaskRuns))
 	assert.NotNil(t, 0, runs[0].Outputs.Val)
@@ -213,15 +214,15 @@ func TestIntegration_VRF_WithBHS(t *testing.T) {
 	require.NoError(t, app.JobSpawner().DeleteJob(ctx, nil, bhsJob.ID))
 
 	// Ensure the eth transaction gets confirmed on chain.
-	gomega.NewWithT(t).Eventually(func() bool {
+	require.Eventually(t, func() bool {
 		orm := txmgr.NewTxStore(app.GetDB(), app.GetLogger())
 		uc, err2 := orm.CountUnconfirmedTransactions(ctx, key.Address, testutils.SimulatedChainID)
 		require.NoError(t, err2)
 		return uc == 0
-	}, 5*time.Second, 100*time.Millisecond).Should(gomega.BeTrue())
+	}, 5*time.Second, 100*time.Millisecond)
 
 	// Assert the request was fulfilled on-chain.
-	gomega.NewWithT(t).Eventually(func() bool {
+	require.Eventually(t, func() bool {
 		rfIterator, err := cu.RootContract.FilterRandomnessRequestFulfilled(nil)
 		require.NoError(t, err, "failed to subscribe to RandomnessRequest logs")
 		var rf []*solidity_vrf_coordinator_interface.VRFCoordinatorRandomnessRequestFulfilled
@@ -229,7 +230,7 @@ func TestIntegration_VRF_WithBHS(t *testing.T) {
 			rf = append(rf, rfIterator.Event)
 		}
 		return len(rf) == 1
-	}, 5*time.Second, 500*time.Millisecond).Should(gomega.BeTrue())
+	}, 5*time.Second, 500*time.Millisecond)
 }
 
 func createVRFJobRegisterKey(t *testing.T, u vrftesthelpers.CoordinatorUniverse, app *cltest.TestApplication, incomingConfs int) (job.Job, vrfkey.KeyV2) {
